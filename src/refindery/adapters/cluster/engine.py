@@ -37,6 +37,7 @@ class ProcessPoolClusterEngine:
                 min_dist=params.min_dist,
                 min_cluster_size=params.min_cluster_size,
                 min_samples=params.min_samples,
+                leiden_resolution=params.leiden_resolution,
                 random_state=params.random_state,
             ),
         )

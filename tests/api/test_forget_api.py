@@ -66,6 +66,14 @@ async def test_forget_requires_exactly_one_target(harness):
     assert neither.status_code == 422
 
 
+async def test_forget_service_requires_exactly_one_target(harness):
+    _client, container = harness
+    with pytest.raises(ValueError, match="provide exactly one"):
+        await container.forget.forget(url="https://a.com/x", domain="a.com")
+    with pytest.raises(ValueError, match="provide exactly one"):
+        await container.forget.forget()
+
+
 async def test_forget_domain_purges_and_blocks(harness):
     client, container = harness
     ids = await _ingest_and_wait(

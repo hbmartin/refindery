@@ -66,6 +66,9 @@ class ForgetService:
         reason: str | None = None,
     ) -> ForgetOutcome:
         """Purge and blacklist one URL or one domain (exactly one given)."""
+        if (url is None) == (domain is None):
+            msg = "provide exactly one of url or domain"
+            raise ValueError(msg)
         if url is not None:
             pattern = canonicalize(url, rules=self._rules).url
             kind = BlacklistKind.URL
@@ -73,7 +76,7 @@ class ForgetService:
             pattern = self._normalize_domain(domain)
             kind = BlacklistKind.DOMAIN
         else:
-            msg = "forget requires url or domain"
+            msg = "provide exactly one of url or domain"
             raise ValueError(msg)
 
         rule = BlacklistRule(

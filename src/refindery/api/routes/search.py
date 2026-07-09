@@ -17,6 +17,7 @@ from refindery.api.schemas import (
     SimilarResult,
     Suggestion,
 )
+from refindery.api.schemas import ClusterRef as ApiClusterRef
 from refindery.application.container import Container
 from refindery.application.services.search_service import (
     SearchFilters,
@@ -43,7 +44,11 @@ def _page_result(result: SearchResultPage) -> PageResult:
         first_seen_at=result.page.first_seen_at,
         visit_count=result.page.visit_count,
         score=result.score,
-        cluster=None,
+        cluster=(
+            None
+            if result.cluster is None
+            else ApiClusterRef(id=result.cluster.id, label=result.cluster.label)
+        ),
         chunks=[
             ChunkResult(
                 chunk_id=chunk.id,

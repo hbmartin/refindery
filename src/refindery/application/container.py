@@ -245,9 +245,11 @@ def _build_llm(settings: Settings) -> OpenAiCompatClient | None:
     )
 
 
-def _build_surface_embedder() -> "Model2VecSurfaceEmbedder | None":
+def _build_surface_embedder(settings: Settings) -> "Model2VecSurfaceEmbedder | None":
+    if settings.entity.surface_embedder == "none":
+        return None
     try:
-        from refindery.adapters.embedding.surface_forms import (  # noqa: PLC0415 — downloads a model
+        from refindery.adapters.embedding.surface_forms import (  # noqa: PLC0415 — optional adapter
             Model2VecSurfaceEmbedder,
         )
 
@@ -369,6 +371,7 @@ def build_container(settings: Settings) -> Container:
         rules=CanonicalizationRules(
             tracking_params=settings.canonicalize.tracking_params
         ),
+        default_recency_half_life_days=settings.search.recency_half_life_days,
     )
     feedback = FeedbackService(query_log=query_log, clock=clock)
     forget = ForgetService(
@@ -384,7 +387,7 @@ def build_container(settings: Settings) -> Container:
 
     canonicalization = CanonicalizationService(
         store=store,
-        surface_embedder=_build_surface_embedder(),
+        surface_embedder=_build_surface_embedder(settings),
         clock=clock,
         cosine_threshold=settings.entity.cosine_threshold,
         edit_threshold=settings.entity.edit_distance_threshold,

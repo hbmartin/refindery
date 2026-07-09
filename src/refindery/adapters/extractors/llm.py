@@ -65,8 +65,7 @@ class LlmExtractor:
         cursors: dict[str, int] = {}
         for item in parsed:
             cursor = cursors.get(item.surface_form, 0)
-            start = snippet.find(item.surface_form, cursor)
-            if start < 0:
+            if (start := snippet.find(item.surface_form, cursor)) < 0:
                 # More repeats reported than occurrences exist; dropping the
                 # extra beats double-counting an already-used offset.
                 continue

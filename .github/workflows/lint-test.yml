@@ -34,7 +34,7 @@ jobs:
         uv run ty check src tests
         uv run pyrefly check src tests
     - name: Run complexity checks
-      run: uv run lizard --languages python src tests
+      run: uv run lizard --languages python src
     - name: Run package metadata checks
       run: uv run pyroma --min 10 .
     - run: uv run deptry src

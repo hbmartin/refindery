@@ -65,6 +65,124 @@ def _jaccard(a: frozenset[PageId], b: frozenset[PageId]) -> float:
     return len(a & b) / len(a | b)
 
 
+def _matching_cost(
+    *,
+    old_ids: list[ClusterId],
+    new_labels: list[int],
+    old: dict[ClusterId, frozenset[PageId]],
+    new: dict[int, frozenset[PageId]],
+) -> np.ndarray:
+    cost = np.ones((len(new_labels), len(old_ids)), dtype=np.float64)
+    for i, label in enumerate(new_labels):
+        for j, old_id in enumerate(old_ids):
+            cost[i, j] = 1.0 - _jaccard(new[label], old[old_id])
+    return cost
+
+
+def _hungarian_matches(
+    *,
+    old_ids: list[ClusterId],
+    new_labels: list[int],
+    old: dict[ClusterId, frozenset[PageId]],
+    new: dict[int, frozenset[PageId]],
+) -> dict[int, tuple[ClusterId, float]]:
+    if not old_ids or not new_labels:
+        return {}
+    cost = _matching_cost(old_ids=old_ids, new_labels=new_labels, old=old, new=new)
+    rows, cols = linear_sum_assignment(cost)
+    matched: dict[int, tuple[ClusterId, float]] = {}
+    for i, j in zip(rows.tolist(), cols.tolist(), strict=True):
+        jaccard = 1.0 - float(cost[i, j])
+        if jaccard >= INHERIT_JACCARD:
+            matched[new_labels[i]] = (old_ids[j], jaccard)
+    return matched
+
+
+def _split_parents(
+    *,
+    members: frozenset[PageId],
+    old_ids: list[ClusterId],
+    old: dict[ClusterId, frozenset[PageId]],
+) -> tuple[ClusterId, ...]:
+    return tuple(
+        old_id for old_id in old_ids if _jaccard(members, old[old_id]) > SPLIT_OVERLAP
+    )
+
+
+def _new_cluster_lineage(
+    *,
+    new_labels: list[int],
+    new: dict[int, frozenset[PageId]],
+    old_ids: list[ClusterId],
+    old: dict[ClusterId, frozenset[PageId]],
+    matched: dict[int, tuple[ClusterId, float]],
+) -> tuple[dict[int, ClusterId], list[LineageRecord]]:
+    ids_by_label: dict[int, ClusterId] = {}
+    lineage: list[LineageRecord] = []
+    for label in new_labels:
+        if label in matched:
+            cluster_id, jaccard = matched[label]
+            ids_by_label[label] = cluster_id
+            lineage.append(
+                LineageRecord(
+                    event=LineageEvent.PERSISTED,
+                    cluster_id=cluster_id,
+                    jaccard=jaccard,
+                )
+            )
+            continue
+        fresh = new_cluster_id()
+        parents = _split_parents(members=new[label], old_ids=old_ids, old=old)
+        ids_by_label[label] = fresh
+        lineage.append(
+            LineageRecord(
+                event=LineageEvent.SPLIT if parents else LineageEvent.CREATED,
+                cluster_id=fresh,
+                parent_ids=parents,
+            )
+        )
+    return ids_by_label, lineage
+
+
+def _absorbing_clusters(
+    *,
+    members: frozenset[PageId],
+    new: dict[int, frozenset[PageId]],
+    ids_by_label: dict[int, ClusterId],
+) -> tuple[ClusterId, ...]:
+    return tuple(
+        ids_by_label[label]
+        for label, new_members in new.items()
+        if len(members & new_members) / len(members) > MERGE_ABSORPTION
+    )
+
+
+def _old_cluster_lineage(
+    *,
+    old: dict[ClusterId, frozenset[PageId]],
+    new: dict[int, frozenset[PageId]],
+    ids_by_label: dict[int, ClusterId],
+    inherited: set[ClusterId],
+) -> tuple[list[LineageRecord], list[ClusterId]]:
+    lineage: list[LineageRecord] = []
+    tombstoned: list[ClusterId] = []
+    for old_id, members in old.items():
+        if old_id in inherited or not members:
+            continue
+        tombstoned.append(old_id)
+        absorbing = _absorbing_clusters(
+            members=members, new=new, ids_by_label=ids_by_label
+        )
+        lineage.append(
+            LineageRecord(
+                event=LineageEvent.MERGED if absorbing else LineageEvent.DISSOLVED,
+                cluster_id=old_id,
+                parent_ids=absorbing,
+            )
+        )
+    return lineage, tombstoned
+
+
 def match_clusters(
     *,
     old: dict[ClusterId, frozenset[PageId]],
@@ -79,67 +197,21 @@ def match_clusters(
     """
     old_ids = list(old)
     new_labels = list(new)
-    matched: dict[int, tuple[ClusterId, float]] = {}
-
-    if old_ids and new_labels:
-        cost = np.ones((len(new_labels), len(old_ids)), dtype=np.float64)
-        for i, label in enumerate(new_labels):
-            for j, old_id in enumerate(old_ids):
-                cost[i, j] = 1.0 - _jaccard(new[label], old[old_id])
-        rows, cols = linear_sum_assignment(cost)
-        for i, j in zip(rows.tolist(), cols.tolist(), strict=True):
-            jaccard = 1.0 - float(cost[i, j])
-            if jaccard >= INHERIT_JACCARD:
-                matched[new_labels[i]] = (old_ids[j], jaccard)
-
-    ids_by_label: dict[int, ClusterId] = {}
-    lineage: list[LineageRecord] = []
+    matched = _hungarian_matches(
+        old_ids=old_ids, new_labels=new_labels, old=old, new=new
+    )
+    ids_by_label, lineage = _new_cluster_lineage(
+        new_labels=new_labels,
+        new=new,
+        old_ids=old_ids,
+        old=old,
+        matched=matched,
+    )
     inherited = {cid for cid, _ in matched.values()}
-
-    for label in new_labels:
-        if label in matched:
-            cluster_id, jaccard = matched[label]
-            ids_by_label[label] = cluster_id
-            lineage.append(
-                LineageRecord(
-                    event=LineageEvent.PERSISTED,
-                    cluster_id=cluster_id,
-                    jaccard=jaccard,
-                )
-            )
-            continue
-        fresh = new_cluster_id()
-        ids_by_label[label] = fresh
-        parents = tuple(
-            old_id
-            for old_id in old_ids
-            if _jaccard(new[label], old[old_id]) > SPLIT_OVERLAP
-        )
-        lineage.append(
-            LineageRecord(
-                event=LineageEvent.SPLIT if parents else LineageEvent.CREATED,
-                cluster_id=fresh,
-                parent_ids=parents,
-            )
-        )
-
-    tombstoned: list[ClusterId] = []
-    for old_id, members in old.items():
-        if old_id in inherited or not members:
-            continue
-        tombstoned.append(old_id)
-        absorbing = [
-            ids_by_label[label]
-            for label, new_members in new.items()
-            if len(members & new_members) / len(members) > MERGE_ABSORPTION
-        ]
-        lineage.append(
-            LineageRecord(
-                event=LineageEvent.MERGED if absorbing else LineageEvent.DISSOLVED,
-                cluster_id=old_id,
-                parent_ids=tuple(absorbing),
-            )
-        )
+    old_lineage, tombstoned = _old_cluster_lineage(
+        old=old, new=new, ids_by_label=ids_by_label, inherited=inherited
+    )
+    lineage.extend(old_lineage)
     return MatchOutcome(
         ids_by_label=ids_by_label,
         lineage=tuple(lineage),

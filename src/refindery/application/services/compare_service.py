@@ -75,6 +75,22 @@ class CompareOutcome:
     agreement: list[PairAgreement]
 
 
+@dataclass(frozen=True, slots=True)
+class _ArmTrace:
+    """Data needed to write one compare-arm query-log row."""
+
+    model_id: str
+    query: str
+    k: int
+    candidates: int
+    rerank: bool
+    compare_id: str
+    dense: list[ChunkHit]
+    sparse: list[ChunkHit]
+    fused: list[ChunkHit]
+    ranked: list[tuple[Page, float]]
+
+
 class CompareService:
     """Runs the pipeline per model and computes agreement."""
 
@@ -164,19 +180,43 @@ class CompareService:
             model_id=model_id, vector=vector, limit=candidates
         )
         fused = rrf_fuse(dense=dense, sparse=sparse)[:candidates]
-
-        rerank_by_id: dict[str, float] = {}
-        if rerank and self._reranker is not None and fused:
-            chunks = await self._store.get_chunks([hit.chunk_id for hit in fused])
-            scores = await self._reranker.rerank(
+        rerank_by_id = await self._rerank_scores(
+            query=query, fused=fused, enabled=rerank
+        )
+        ranked = await self._rank_pages(fused=fused, rerank_by_id=rerank_by_id, k=k)
+        self._log_arm(
+            _ArmTrace(
+                model_id=model_id,
                 query=query,
-                candidates=[
-                    RerankCandidate(chunk_id=chunk.id, text=chunk.text)
-                    for chunk in chunks
-                ],
+                k=k,
+                candidates=candidates,
+                rerank=rerank,
+                compare_id=compare_id,
+                dense=dense,
+                sparse=sparse,
+                fused=fused,
+                ranked=ranked,
             )
-            rerank_by_id = {score.chunk_id: score.score for score in scores}
+        )
+        return CompareArm(model_id=model_id, pages=ranked)
 
+    async def _rerank_scores(
+        self, *, query: str, fused: list[ChunkHit], enabled: bool
+    ) -> dict[str, float]:
+        if not enabled or self._reranker is None or not fused:
+            return {}
+        chunks = await self._store.get_chunks([hit.chunk_id for hit in fused])
+        scores = await self._reranker.rerank(
+            query=query,
+            candidates=[
+                RerankCandidate(chunk_id=chunk.id, text=chunk.text) for chunk in chunks
+            ],
+        )
+        return {score.chunk_id: score.score for score in scores}
+
+    async def _rank_pages(
+        self, *, fused: list[ChunkHit], rerank_by_id: dict[str, float], k: int
+    ) -> list[tuple[Page, float]]:
         scored = [
             ScoredChunk(
                 chunk_id=hit.chunk_id,
@@ -191,41 +231,43 @@ class CompareService:
         by_id: dict[PageId, Page] = await indexed_pages_by_id(
             self._store, [p.page_id for p in page_scores]
         )
-        ranked = [
-            (by_id[p.page_id], p.score) for p in page_scores if p.page_id in by_id
-        ]
+        return [(by_id[p.page_id], p.score) for p in page_scores if p.page_id in by_id]
 
+    def _log_arm(self, trace: _ArmTrace) -> None:
         self._query_log.log_query(
             QueryLogRecord(
                 query_id=new_query_id(),
                 ts=self._clock.now(),
                 kind="compare_arm",
-                compare_id=compare_id,
-                query_text=query,
-                params={"k": k, "candidates": candidates, "rerank": rerank},
-                active_model=model_id,
+                compare_id=trace.compare_id,
+                query_text=trace.query,
+                params={
+                    "k": trace.k,
+                    "candidates": trace.candidates,
+                    "rerank": trace.rerank,
+                },
+                active_model=trace.model_id,
                 reranker_model=(
                     self._reranker.model_name
-                    if rerank and self._reranker is not None
+                    if trace.rerank and self._reranker is not None
                     else None
                 ),
                 candidate_set=tuple(
                     LoggedHit(chunk_id=h.chunk_id, page_id=h.page_id, score=h.score)
-                    for h in fused
+                    for h in trace.fused
                 ),
                 dense_hits=tuple(
                     LoggedHit(chunk_id=h.chunk_id, page_id=h.page_id, score=h.score)
-                    for h in dense
+                    for h in trace.dense
                 ),
                 sparse_hits=tuple(
                     LoggedHit(chunk_id=h.chunk_id, page_id=h.page_id, score=h.score)
-                    for h in sparse
+                    for h in trace.sparse
                 ),
                 final_pages=tuple(
                     LoggedPage(page_id=page.id, score=score, rank=rank)
-                    for rank, (page, score) in enumerate(ranked, start=1)
+                    for rank, (page, score) in enumerate(trace.ranked, start=1)
                 ),
                 timing_ms={},
             )
         )
-        return CompareArm(model_id=model_id, pages=ranked)

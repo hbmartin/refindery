@@ -122,6 +122,11 @@ addopts = "-m 'not external'"
 [tool.coverage.run]
 source = ["src/refindery"]
 
+[tool.coverage.report]
+# Floor set just below measured coverage (85% local with qdrant tests
+# skipped) to stop silent rot; applies to any full --cov run, local or CI.
+fail_under = 84
+
 [tool.pyrefly]
 search-path = ["src", "."]
 

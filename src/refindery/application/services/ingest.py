@@ -77,7 +77,7 @@ class IngestService:
             await self._store.record_revisit(
                 page_id=existing.id, seen_at=self._clock.now()
             )
-            offered = request.body_extracted or request.body_html
+            offered = await self._offered_body_for_hash(request)
             differs = (
                 offered is not None
                 and existing.content_hash is not None
@@ -122,6 +122,19 @@ class IngestService:
                 idempotency_key=f"index:{page.id}:{page.content_hash}",
             )
         return IngestQueued(page_id=page.id)
+
+    async def _offered_body_for_hash(self, request: IngestRequest) -> str | None:
+        """Return normalized body text offered during a revisit, if any."""
+        if request.body_extracted is not None:
+            return request.body_extracted
+        if request.body_html is not None:
+            extracted = await self._router.extract(
+                content_type="text/html",
+                raw=request.body_html.encode("utf-8"),
+                charset="utf-8",
+            )
+            return extracted.body_text
+        return None
 
     async def _resolve_body(self, request: IngestRequest) -> str | None:
         """Resolve body text inline; None defers to a fetch_and_index job."""

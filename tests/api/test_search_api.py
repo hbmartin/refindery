@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from refindery.api.app import create_app
+from refindery.domain.models import PageStatus
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
 
 AUTH = {"Authorization": f"Bearer {TEST_TOKEN}"}
@@ -176,6 +177,32 @@ async def test_similar_endpoint(harness):
     assert ids[0] not in got
     assert got <= {ids[1], ids[2]}
     assert all(r["reason"] == "vector" for r in data["results"])
+
+
+async def test_search_exact_suggestions_and_similar_exclude_non_indexed(harness):
+    client, container, ids = harness
+    await container.store.set_page_status(page_id=ids[2], status=PageStatus.FAILED)
+
+    exact = await client.post(
+        "/v1/search",
+        json={"query": "https://authz.example/zanzibar", "suggest": 0},
+        headers=AUTH,
+    )
+    assert exact.status_code == 200
+    assert all(r["page_id"] != ids[2] for r in exact.json()["results"])
+
+    broad = await client.post(
+        "/v1/search",
+        json={"query": "architecture clusters zanzibar", "suggest": 5},
+        headers=AUTH,
+    )
+    data = broad.json()
+    assert all(r["page_id"] != ids[2] for r in data["results"])
+    assert all(s["page_id"] != ids[2] for s in data["suggestions"])
+
+    similar = await client.get(f"/v1/pages/{ids[2]}/similar", headers=AUTH)
+    assert similar.status_code == 200
+    assert similar.json()["results"] == []
 
 
 async def test_similar_cluster_mediation_empty_before_first_run(harness):

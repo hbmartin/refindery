@@ -5,6 +5,7 @@ below the canonical chunk hard max — accepting one would force a re-chunk,
 invalidating every other model's index and destroying A/B comparability.
 """
 
+import logging
 from collections.abc import Callable
 
 from refindery.application.ports.clock import Clock
@@ -17,6 +18,7 @@ from refindery.domain.models import EmbeddingModel, ModelStatus
 type EmbedderFactory = Callable[[EmbeddingModel], Embedder]
 
 INDEXABLE_STATUSES = frozenset({ModelStatus.READY, ModelStatus.BACKFILLING})
+logger = logging.getLogger(__name__)
 
 
 class ModelRegistry:
@@ -43,15 +45,46 @@ class ModelRegistry:
         existing = await self._store.get_model(model.id)
         if existing is None:
             self._validate_budget(model)
-            await self._store.register_model(model)
+            existing_models = await self._store.list_models(
+                statuses=frozenset(
+                    {
+                        ModelStatus.READY,
+                        ModelStatus.BACKFILLING,
+                        ModelStatus.REGISTERED,
+                    }
+                )
+            )
+            await self._vector_store.ensure_schema([*existing_models, model])
+            try:
+                await self._store.register_model(model)
+            except Exception:
+                try:
+                    await self._vector_store.drop_model(model.id)
+                except Exception:  # noqa: BLE001 — rollback cleanup is best-effort
+                    logger.warning(
+                        "failed to drop configured model vector space after "
+                        "metadata registration rollback",
+                        exc_info=True,
+                    )
+                raise
         if await self._store.get_active_model() is None:
             await self._store.activate_model(model.id)
 
     async def register(self, model: EmbeddingModel) -> EmbeddingModel:
         """Register a new model (status=registered, not active)."""
         self._validate_budget(model)
-        await self._store.register_model(model)
         await self._vector_store.add_model(model)
+        try:
+            await self._store.register_model(model)
+        except Exception:
+            try:
+                await self._vector_store.drop_model(model.id)
+            except Exception:  # noqa: BLE001 — rollback cleanup is best-effort
+                logger.warning(
+                    "failed to drop vector space after model registration rollback",
+                    exc_info=True,
+                )
+            raise
         return model
 
     def _validate_budget(self, model: EmbeddingModel) -> None:

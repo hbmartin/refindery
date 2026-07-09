@@ -21,7 +21,7 @@ from refindery.domain.clustering import dynamic_hdbscan_params, match_clusters
 from refindery.domain.ctfidf import compute_ctfidf
 from refindery.domain.errors import NoActiveModelError, RefinderyError
 from refindery.domain.ids import ClusterId, PageId, new_cluster_run_id
-from refindery.domain.models import Cluster, ClusterRun, Job, JobKind
+from refindery.domain.models import Cluster, ClusterRun, Job, JobKind, PageStatus
 from refindery.domain.rollup import l2_normalize
 
 logger = logging.getLogger(__name__)
@@ -100,9 +100,14 @@ class ClusterRunService:
         rows = await self._store.get_page_vectors(model_id=model.id)
         if len(rows) < self._settings.min_pages:
             return None
-        page_ids = [pid for pid, _ in rows]
+        indexed = await self._store.get_pages([row.page_id for row in rows])
+        indexed_ids = {page.id for page in indexed if page.status is PageStatus.INDEXED}
+        rows = [row for row in rows if row.page_id in indexed_ids]
+        if len(rows) < self._settings.min_pages:
+            return None
+        page_ids = [row.page_id for row in rows]
         matrix = np.ascontiguousarray(
-            np.stack([np.frombuffer(blob, dtype=np.float32) for _, blob in rows])
+            np.stack([np.frombuffer(row.vector, dtype=np.float32) for row in rows])
         )
 
         min_cluster_size, min_samples = dynamic_hdbscan_params(len(page_ids))
@@ -145,7 +150,7 @@ class ClusterRunService:
         old: dict[ClusterId, frozenset[PageId]] = {}
         for cluster in live:
             members = await self._store.cluster_members(ClusterId(cluster.id))
-            old[ClusterId(cluster.id)] = frozenset(pid for pid, _ in members)
+            old[ClusterId(cluster.id)] = frozenset(member.page_id for member in members)
 
         outcome = match_clusters(
             old=old, new={k: frozenset(v) for k, v in new_members.items()}
@@ -237,7 +242,7 @@ class ClusterRunService:
             try:
                 members = await self._store.cluster_members(ClusterId(cluster_id))
                 pages = await self._store.get_pages(
-                    [pid for pid, _ in members[:_LABEL_TITLES]]
+                    [member.page_id for member in members[:_LABEL_TITLES]]
                 )
                 titles = [page.title for page in pages if page.title]
                 prompt = (
@@ -266,3 +271,11 @@ class ClusterRunService:
             job.payload.get("run_id", "?"),
             merges,
         )
+
+    async def close(self) -> None:
+        """Release optional cluster resources."""
+        close = getattr(self._engine, "close", None)
+        if callable(close):
+            close()
+        if self._labeler is not None:
+            await self._labeler.aclose()

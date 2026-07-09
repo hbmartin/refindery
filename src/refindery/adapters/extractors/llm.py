@@ -8,7 +8,7 @@ whose surface form cannot be located are dropped.
 import json
 import logging
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from refindery.adapters.llm.openai_compat import OpenAiCompatClient
 from refindery.domain.entities import EntityType
@@ -28,7 +28,7 @@ Text:
 
 
 class _RawMention(BaseModel):
-    surface_form: str
+    surface_form: str = Field(min_length=1)
     type: EntityType
 
 
@@ -62,10 +62,15 @@ class LlmExtractor:
             logger.warning("LLM extractor returned unparseable output")
             return []
         mentions: list[Mention] = []
+        cursors: dict[str, int] = {}
         for item in parsed:
-            start = snippet.find(item.surface_form)
+            cursor = cursors.get(item.surface_form, 0)
+            start = snippet.find(item.surface_form, cursor)
+            if start < 0 and cursor:
+                start = snippet.find(item.surface_form)
             if start < 0:
                 continue
+            cursors[item.surface_form] = start + len(item.surface_form)
             mentions.append(
                 Mention(
                     surface_form=item.surface_form,
@@ -75,3 +80,8 @@ class LlmExtractor:
                 )
             )
         return mentions
+
+    async def aclose(self) -> None:
+        """Close the configured LLM client."""
+        if self._client is not None:
+            await self._client.aclose()

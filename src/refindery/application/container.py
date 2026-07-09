@@ -5,6 +5,7 @@ Tests build a Container with fakes; production uses ``build_container``.
 
 import logging
 from dataclasses import dataclass
+from inspect import isawaitable
 from typing import TYPE_CHECKING
 
 from refindery.adapters.chunking.chonkie_chunker import ChonkieChunker
@@ -46,7 +47,7 @@ from refindery.application.services.search_service import SearchService
 from refindery.application.services.similarity_service import SimilarityService
 from refindery.config import RerankerKind, Settings, VectorStoreKind
 from refindery.domain.canonical_url import CanonicalizationRules
-from refindery.domain.errors import ExtractionUnavailableError
+from refindery.domain.errors import ConfigurationError, ExtractionUnavailableError
 from refindery.domain.models import EmbeddingModel, JobKind, ModelStatus
 
 if TYPE_CHECKING:
@@ -77,6 +78,7 @@ class Container:
     feedback: FeedbackService
     forget: ForgetService
     canonicalization: CanonicalizationService
+    entity_ingest: EntityIngestService
     clustering: ClusterRunService
     idle_detector: IdleDetector
     backfill: BackfillService
@@ -85,6 +87,14 @@ class Container:
 
     async def startup(self) -> None:
         """Connect, migrate, sync registry, recover jobs, start the consumer."""
+        logger.warning(
+            "job execution is lease-only; long-running jobs are retried only after "
+            "lease recovery, not interrupted at timeout"
+        )
+        logger.warning(
+            "query logs retain raw query text and hit ids in %s until manually purged",
+            self.settings.duckdb.path,
+        )
         self.sink.start()
         await self.store.connect()
         await self.store.migrate()
@@ -99,10 +109,28 @@ class Container:
         await self.queue.start()
 
     async def shutdown(self) -> None:
-        """Reverse order: stop consumer, close stores, drain the sink."""
-        await self.queue.stop()
-        await self.vector_store.close()
-        await self.store.close()
+        """Attempt every cleanup step and log individual failures."""
+        steps = (
+            ("queue", self.queue.stop),
+            ("entity_ingest", self.entity_ingest.close),
+            ("clustering", self.clustering.close),
+            ("vector_store", self.vector_store.close),
+            ("router", self._close_router),
+            ("store", self.store.close),
+            ("sink", self._close_sink),
+        )
+        for name, cleanup in steps:
+            try:
+                result = cleanup()
+                if isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("shutdown cleanup failed: %s", name)
+
+    async def _close_router(self) -> None:
+        self.router.close()
+
+    async def _close_sink(self) -> None:
         self.sink.close()
 
     def configured_model(self) -> EmbeddingModel:
@@ -150,12 +178,17 @@ def _build_vector_store(settings: Settings) -> VectorStore:
                 collection=settings.qdrant.collection,
                 api_key=None if api_key is None else api_key.get_secret_value(),
             )
+        case _:
+            msg = f"unknown vector store {settings.vector_store!r}"
+            raise ConfigurationError(msg)
 
 
-def _build_extractor(settings: Settings) -> EntityExtractor | None:
-    """Build the configured extractor chain; None disables entity extraction."""
+def _build_extractor(settings: Settings) -> EntityExtractor:
+    """Build the configured extractor chain; startup fails when none are healthy."""
     links: list[EntityExtractor] = []
+    attempted: list[str] = []
     for name in settings.entity.extractor_chain:
+        attempted.append(name)
         match name:
             case "gliner":
                 from refindery.adapters.extractors.gliner_spacy import (  # noqa: PLC0415
@@ -164,8 +197,8 @@ def _build_extractor(settings: Settings) -> EntityExtractor | None:
 
                 try:
                     links.append(GlinerExtractor())
-                except Exception:  # noqa: BLE001 — extra not installed
-                    logger.info("gliner extractor unavailable")
+                except Exception as exc:  # noqa: BLE001 — extra not installed
+                    logger.info("gliner extractor unavailable: %s", exc)
             case "spacy":
                 from refindery.adapters.extractors.spacy_ner import (  # noqa: PLC0415
                     SpacyExtractor,
@@ -182,10 +215,18 @@ def _build_extractor(settings: Settings) -> EntityExtractor | None:
                 )
 
                 links.append(LlmExtractor(_build_llm(settings)))
+            case _:
+                logger.warning("unknown entity extractor configured: %s", name)
     healthy = [link for link in links if link.health_check()]
     if not healthy:
-        logger.warning("no healthy entity extractor; entity features degrade")
-        return None
+        attempted_text = ", ".join(attempted) or "<empty chain>"
+        msg = (
+            "no healthy entity extractor in configured chain "
+            f"({attempted_text}); install NER support with `uv sync --extra ner`, "
+            "configure REFINDERY_ENTITY__EXTRACTOR_CHAIN, add a gazetteer file, "
+            "or configure REFINDERY_LLM__BASE_URL for the llm extractor"
+        )
+        raise ConfigurationError(msg)
     return ChainExtractor(healthy)
 
 
@@ -200,12 +241,20 @@ def _build_llm(settings: Settings) -> OpenAiCompatClient | None:
     )
 
 
-def _build_surface_embedder() -> "Model2VecSurfaceEmbedder":
-    from refindery.adapters.embedding.surface_forms import (  # noqa: PLC0415 — downloads a model
-        Model2VecSurfaceEmbedder,
-    )
+def _build_surface_embedder() -> "Model2VecSurfaceEmbedder | None":
+    try:
+        from refindery.adapters.embedding.surface_forms import (  # noqa: PLC0415 — downloads a model
+            Model2VecSurfaceEmbedder,
+        )
 
-    return Model2VecSurfaceEmbedder()
+        return Model2VecSurfaceEmbedder()
+    except Exception:  # noqa: BLE001 — exact/edit canonicalization still works
+        logger.warning(
+            "surface-form embedder unavailable; entity canonicalization uses "
+            "exact/edit matching only",
+            exc_info=True,
+        )
+        return None
 
 
 def _build_reranker(settings: Settings) -> Reranker | None:
@@ -231,6 +280,9 @@ def _build_reranker(settings: Settings) -> Reranker | None:
                     settings.reranker.model,
                 )
                 return None
+        case _:
+            msg = f"unknown reranker kind {settings.reranker.kind!r}"
+            raise ConfigurationError(msg)
 
 
 def _build_extractors() -> list[ContentExtractor]:
@@ -288,6 +340,7 @@ def build_container(settings: Settings) -> Container:
         },
         on_dead=indexing.mark_page_dead,
     )
+    indexing.set_queue(queue)
     ingest = IngestService(
         store=store,
         queue=queue,
@@ -333,10 +386,13 @@ def build_container(settings: Settings) -> Container:
         edit_threshold=settings.entity.edit_distance_threshold,
     )
     entity_ingest = EntityIngestService(
+        store=store,
         extractor=_build_extractor(settings),
         canonicalization=canonicalization,
     )
-    indexing.set_page_hook(entity_ingest.on_page_indexed)
+    queue.add_handler(
+        JobKind.EXTRACT_ENTITIES, entity_ingest.handle_extract_entities_job
+    )
     clustering = ClusterRunService(
         store=store,
         engine=ProcessPoolClusterEngine(),
@@ -417,6 +473,7 @@ def build_container(settings: Settings) -> Container:
         feedback=feedback,
         forget=forget,
         canonicalization=canonicalization,
+        entity_ingest=entity_ingest,
         clustering=clustering,
         idle_detector=idle_detector,
         backfill=backfill,

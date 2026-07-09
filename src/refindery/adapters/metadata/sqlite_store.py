@@ -14,8 +14,14 @@ from types import TracebackType
 from typing import Self
 
 import aiosqlite
+from uuid6 import uuid7
 
 from refindery.adapters.metadata import migrator
+from refindery.application.ports.metadata_store import (
+    ChunkStats,
+    ClusterMemberRow,
+    PageVectorRow,
+)
 from refindery.domain.clustering import LineageRecord
 from refindery.domain.entities import Entity, EntityType
 from refindery.domain.errors import JobNotFoundError
@@ -119,6 +125,15 @@ def _blacklist_from_row(row: sqlite3.Row) -> BlacklistRule:
         created_at=datetime.fromisoformat(row["created_at"]),
         reason=row["reason"],
     )
+
+
+def _domain_suffix_match(*, domain: str, pattern: str) -> bool:
+    return domain == pattern or domain.endswith(f".{pattern}")
+
+
+def _escape_like(value: str) -> str:
+    """Escape SQL LIKE wildcards while preserving literal dots/hyphens."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _model_from_row(row: sqlite3.Row) -> EmbeddingModel:
@@ -369,7 +384,22 @@ class _EntityClusterMixin:
             }
             for row in await cursor.fetchall()
         ]
-        merge_id = str(__import__("uuid6").uuid7())
+        cursor = await self.conn.execute(
+            "SELECT page_id, chunk_id, surface_form, char_start, char_end "
+            "FROM entity_mentions WHERE entity_id = ?",
+            (source_id,),
+        )
+        moved_mentions = [
+            {
+                "page_id": row["page_id"],
+                "chunk_id": row["chunk_id"],
+                "surface_form": row["surface_form"],
+                "char_start": row["char_start"],
+                "char_end": row["char_end"],
+            }
+            for row in await cursor.fetchall()
+        ]
+        merge_id = str(uuid7())
         await self.conn.execute(
             "INSERT INTO entity_merges (id, source_entity_snapshot, "
             "target_entity_id, moved_aliases, method, similarity, merged_at) "
@@ -384,7 +414,7 @@ class _EntityClusterMixin:
                     }
                 ),
                 target_id,
-                json.dumps(moved),
+                json.dumps({"aliases": moved, "mentions": moved_mentions}),
                 method,
                 similarity,
                 _ts(now),
@@ -451,7 +481,13 @@ class _EntityClusterMixin:
             raise ValueError(msg)
 
         snapshot = json.loads(merge["source_entity_snapshot"])
-        moved = json.loads(merge["moved_aliases"])
+        moved_snapshot = json.loads(merge["moved_aliases"])
+        if isinstance(moved_snapshot, dict):
+            moved = moved_snapshot.get("aliases", [])
+            moved_mentions = moved_snapshot.get("mentions", [])
+        else:
+            moved = moved_snapshot
+            moved_mentions = []
         source_id = EntityId(snapshot["id"])
         target_id = EntityId(merge["target_entity_id"])
         await self.conn.execute(
@@ -465,7 +501,28 @@ class _EntityClusterMixin:
                 "WHERE surface_form = ? AND entity_id = ?",
                 (source_id, alias["surface_form"], target_id),
             )
-        if moved_forms:
+        if moved_mentions:
+            for mention in moved_mentions:
+                await self.conn.execute(
+                    "UPDATE OR IGNORE entity_mentions SET entity_id = ? "
+                    "WHERE entity_id = ? AND page_id = ? AND "
+                    "(chunk_id IS ? OR chunk_id = ?) AND surface_form = ? AND "
+                    "(char_start IS ? OR char_start = ?) AND "
+                    "(char_end IS ? OR char_end = ?)",
+                    (
+                        source_id,
+                        target_id,
+                        mention["page_id"],
+                        mention["chunk_id"],
+                        mention["chunk_id"],
+                        mention["surface_form"],
+                        mention["char_start"],
+                        mention["char_start"],
+                        mention["char_end"],
+                        mention["char_end"],
+                    ),
+                )
+        elif moved_forms:
             placeholders = ",".join("?" for _ in moved_forms)
             await self.conn.execute(
                 "UPDATE OR IGNORE entity_mentions SET entity_id = ? "  # noqa: S608
@@ -567,9 +624,7 @@ class _EntityClusterMixin:
         rows = await cursor.fetchall()
         return [_cluster_from_row(row) for row in rows]
 
-    async def cluster_members(
-        self, cluster_id: ClusterId
-    ) -> list[tuple[PageId, float | None]]:
+    async def cluster_members(self, cluster_id: ClusterId) -> list[ClusterMemberRow]:
         """Members with probability."""
         cursor = await self.conn.execute(
             "SELECT page_id, probability FROM cluster_members "
@@ -577,7 +632,12 @@ class _EntityClusterMixin:
             (cluster_id,),
         )
         rows = await cursor.fetchall()
-        return [(PageId(row["page_id"]), row["probability"]) for row in rows]
+        return [
+            ClusterMemberRow(
+                page_id=PageId(row["page_id"]), probability=row["probability"]
+            )
+            for row in rows
+        ]
 
     async def cluster_for_page(self, page_id: PageId) -> Cluster | None:
         """Return the live cluster containing this page."""
@@ -691,13 +751,15 @@ class _EntityClusterMixin:
 
     # -- backfills ------------------------------------------------------------
 
-    async def chunk_stats(self) -> tuple[int, int]:
+    async def chunk_stats(self) -> ChunkStats:
         """(n_chunks, total_tokens) over the whole corpus."""
         cursor = await self.conn.execute(
             "SELECT COUNT(*) AS n, COALESCE(SUM(token_count), 0) AS toks FROM chunks"
         )
         row = await cursor.fetchone()
-        return (0, 0) if row is None else (row["n"], row["toks"])
+        if row is None:
+            return ChunkStats(n_chunks=0, total_tokens=0)
+        return ChunkStats(n_chunks=row["n"], total_tokens=row["toks"])
 
     async def pages_with_chunks_after(
         self, *, cursor: PageId | None, limit: int = 50
@@ -1005,7 +1067,7 @@ class SqliteMetadataStore(_EntityClusterMixin):
         )
         await self.conn.commit()
 
-    async def get_page_vectors(self, *, model_id: str) -> list[tuple[PageId, bytes]]:
+    async def get_page_vectors(self, *, model_id: str) -> list[PageVectorRow]:
         """All page vectors for one model (clustering / similarity)."""
         cursor = await self.conn.execute(
             "SELECT page_id, vector FROM page_vectors WHERE model_id = ? "
@@ -1013,7 +1075,18 @@ class SqliteMetadataStore(_EntityClusterMixin):
             (model_id,),
         )
         rows = await cursor.fetchall()
-        return [(PageId(row["page_id"]), row["vector"]) for row in rows]
+        return [
+            PageVectorRow(page_id=PageId(row["page_id"]), vector=row["vector"])
+            for row in rows
+        ]
+
+    async def clear_index_artifacts(self, page_id: PageId) -> None:
+        """Remove chunks and page vectors after a failed core indexing attempt."""
+        await self.conn.execute("DELETE FROM chunks WHERE page_id = ?", (page_id,))
+        await self.conn.execute(
+            "DELETE FROM page_vectors WHERE page_id = ?", (page_id,)
+        )
+        await self.conn.commit()
 
     # -- embedding models ---------------------------------------------------
 
@@ -1080,10 +1153,19 @@ class SqliteMetadataStore(_EntityClusterMixin):
 
     async def activate_model(self, model_id: str) -> None:
         """Atomically make this the only active model."""
-        await self.conn.execute(
-            "UPDATE embedding_models SET is_active = (id = ?)", (model_id,)
-        )
-        await self.conn.commit()
+        await self.conn.execute("BEGIN")
+        try:
+            await self.conn.execute(
+                "UPDATE embedding_models SET is_active = 0 WHERE id != ?", (model_id,)
+            )
+            await self.conn.execute(
+                "UPDATE embedding_models SET is_active = 1 WHERE id = ?", (model_id,)
+            )
+        except Exception:
+            await self.conn.rollback()
+            raise
+        else:
+            await self.conn.commit()
 
     # -- jobs ledger ---------------------------------------------------------
 
@@ -1140,6 +1222,26 @@ class SqliteMetadataStore(_EntityClusterMixin):
             )
         rows = await cursor.fetchall()
         return [_job_from_row(row) for row in rows]
+
+    async def latest_job_for_page(
+        self, *, page_id: PageId, kind: JobKind | None = None
+    ) -> Job | None:
+        """Newest job whose payload contains this page id."""
+        if kind is None:
+            cursor = await self.conn.execute(
+                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE json_extract(payload, "  # noqa: S608
+                "'$.page_id') = ? ORDER BY created_at DESC LIMIT 1",
+                (page_id,),
+            )
+        else:
+            cursor = await self.conn.execute(
+                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE kind = ? AND "  # noqa: S608
+                "json_extract(payload, '$.page_id') = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (kind, page_id),
+            )
+        row = await cursor.fetchone()
+        return None if row is None else _job_from_row(row)
 
     async def mark_job_running(
         self, *, job_id: JobId, lease_until: datetime, now: datetime
@@ -1254,8 +1356,8 @@ class SqliteMetadataStore(_EntityClusterMixin):
             )
         else:
             cursor = await self.conn.execute(
-                "SELECT id FROM pages WHERE domain = ? OR domain LIKE ?",
-                (rule.pattern, f"%.{rule.pattern}"),
+                "SELECT id FROM pages WHERE domain = ? OR domain LIKE ? ESCAPE '\\'",
+                (rule.pattern, f"%.{_escape_like(rule.pattern)}"),
             )
         page_ids = [PageId(row["id"]) for row in await cursor.fetchall()]
 
@@ -1359,23 +1461,20 @@ class SqliteMetadataStore(_EntityClusterMixin):
         """
         cursor = await self.conn.execute(
             "SELECT id, pattern, kind, reason, created_at FROM blacklist "
-            "WHERE (kind = ? AND pattern = ?) "
-            "OR (kind = ? AND (pattern = ? OR ? LIKE '%.' || pattern))",
-            (
-                BlacklistKind.URL,
-                canonical_url,
-                BlacklistKind.DOMAIN,
-                domain,
-                domain,
-            ),
+            "WHERE kind = ? AND pattern = ? LIMIT 1",
+            (BlacklistKind.URL, canonical_url),
         )
         row = await cursor.fetchone()
-        if row is None:
-            return None
-        return BlacklistRule(
-            id=BlacklistId(row["id"]),
-            pattern=row["pattern"],
-            kind=BlacklistKind(row["kind"]),
-            created_at=datetime.fromisoformat(row["created_at"]),
-            reason=row["reason"],
+        if row is not None:
+            return _blacklist_from_row(row)
+
+        cursor = await self.conn.execute(
+            "SELECT id, pattern, kind, reason, created_at FROM blacklist "
+            "WHERE kind = ? ORDER BY created_at DESC",
+            (BlacklistKind.DOMAIN,),
         )
+        for row in await cursor.fetchall():
+            rule = _blacklist_from_row(row)
+            if _domain_suffix_match(domain=domain, pattern=rule.pattern):
+                return rule
+        return None

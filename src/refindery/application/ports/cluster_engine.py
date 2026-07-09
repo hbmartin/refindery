@@ -1,7 +1,7 @@
 """Clustering engine port (implemented in M4)."""
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 import numpy.typing as npt
@@ -11,8 +11,8 @@ import numpy.typing as npt
 class ClusterParams:
     """Parameters crossing the process-pool boundary (primitives only)."""
 
-    algorithm: str = "hdbscan"
-    reducer: str = "umap"
+    algorithm: Literal["hdbscan", "kmeans"] = "hdbscan"
+    reducer: Literal["umap", "pca", "none"] = "umap"
     n_components: int = 10
     n_neighbors: int = 15
     min_dist: float = 0.0

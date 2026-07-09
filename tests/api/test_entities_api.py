@@ -51,7 +51,11 @@ async def harness(tmp_path):
                         got = await http.get(
                             f"/v1/pages/{page_id}/status", headers=AUTH
                         )
-                        if got.json()["status"] == "indexed":
+                        data = got.json()
+                        if (
+                            data["status"] == "indexed"
+                            and data["features"]["entities"]["status"] == "done"
+                        ):
                             break
                         await asyncio.sleep(0.05)
             yield http, container, ids

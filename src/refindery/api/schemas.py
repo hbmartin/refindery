@@ -79,12 +79,26 @@ class PageResponse(BaseModel):
     status: PageStatus
 
 
+class FeatureStatus(BaseModel):
+    """Status of an asynchronous enrichment feature for a page."""
+
+    status: JobStatus | Literal["not_queued"] | None = None
+    last_error: str | None = None
+
+
+class PageStatusFeatures(BaseModel):
+    """Nested enrichment feature state."""
+
+    entities: FeatureStatus | None = None
+
+
 class PageStatusResponse(BaseModel):
     """GET /v1/pages/{id}/status."""
 
     page_id: str
     status: PageStatus
     last_error: str | None = None
+    features: PageStatusFeatures | None = None
 
 
 class JobResponse(BaseModel):
@@ -416,6 +430,9 @@ class CompareRequest(BaseModel):
     def _unique_models(self) -> Self:
         if len(set(self.models)) != len(self.models):
             msg = "models must be unique"
+            raise ValueError(msg)
+        if self.candidates < self.k:
+            msg = "candidates must be >= k"
             raise ValueError(msg)
         return self
 

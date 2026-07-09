@@ -10,6 +10,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.job_queue import JobQueue
@@ -69,7 +70,7 @@ class ForgetService:
             pattern = canonicalize(url, rules=self._rules).url
             kind = BlacklistKind.URL
         elif domain is not None:
-            pattern = domain.strip().lower().removeprefix("www.")
+            pattern = self._normalize_domain(domain)
             kind = BlacklistKind.DOMAIN
         else:
             msg = "forget requires url or domain"
@@ -90,6 +91,20 @@ class ForgetService:
             pages_purged=len(purged),
             vector_deletes_queued=len(purged),
         )
+
+    @staticmethod
+    def _normalize_domain(value: str) -> str:
+        """Leniently normalize a domain-like forget target."""
+        text = value.strip().lower()
+        if "://" not in text:
+            text = f"//{text}"
+        parts = urlsplit(text)
+        host = parts.hostname or parts.path.split("/", maxsplit=1)[0]
+        host = host.removeprefix("www.").rstrip(".")
+        if not host or "." not in host:
+            msg = f"invalid domain: {value!r}"
+            raise ValueError(msg)
+        return host
 
     async def _enqueue_purge(self, page_ids: list[PageId]) -> None:
         digest = hashlib.sha256(",".join(sorted(page_ids)).encode()).hexdigest()[:16]

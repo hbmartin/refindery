@@ -9,6 +9,10 @@ class RefinderyError(Exception):
     """Base class for all domain errors."""
 
 
+class ConfigurationError(RefinderyError):
+    """The application cannot start with the supplied configuration."""
+
+
 class BlacklistedError(RefinderyError):
     """The URL matches a blacklist rule."""
 

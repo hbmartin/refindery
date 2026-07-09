@@ -12,8 +12,9 @@ Provider API keys use their native variables (``VOYAGE_API_KEY``, ...).
 
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from refindery.domain.canonical_url import DEFAULT_TRACKING_PARAMS
@@ -84,8 +85,8 @@ class EmbedderSettings(BaseModel):
 
     provider: str = "voyage"
     model: str = "voyage-3.5"
-    dim: int = 1024
-    max_input_tokens: int = 32_000
+    dim: int = Field(default=1024, ge=1)
+    max_input_tokens: int = Field(default=32_000, ge=1)
 
 
 class RerankerSettings(BaseModel):
@@ -99,9 +100,9 @@ class RerankerSettings(BaseModel):
 class ChunkingSettings(BaseModel):
     """Canonical chunking parameters (model-independent)."""
 
-    target_tokens: int = 448
-    overlap_tokens: int = 64
-    hard_max_tokens: int = 512
+    target_tokens: int = Field(default=448, ge=1)
+    overlap_tokens: int = Field(default=64, ge=0)
+    hard_max_tokens: int = Field(default=512, ge=1)
 
 
 class CanonicalizeSettings(BaseModel):
@@ -119,16 +120,16 @@ class IndexingSettings(BaseModel):
 class FetchSettings(BaseModel):
     """Outbound fetch limits for the fetch_and_index path."""
 
-    timeout_s: float = 10.0
-    max_bytes: int = 10_000_000
+    timeout_s: float = Field(default=10.0, gt=0)
+    max_bytes: int = Field(default=10_000_000, ge=1)
 
 
 class JobsSettings(BaseModel):
     """Durable job execution parameters."""
 
-    max_attempts: int = 5
-    lease_minutes: int = 15
-    backoff_base_s: float = 2.0
+    max_attempts: int = Field(default=5, ge=1)
+    lease_minutes: int = Field(default=15, ge=1)
+    backoff_base_s: float = Field(default=2.0, gt=0)
 
 
 class McpSettings(BaseModel):
@@ -140,22 +141,37 @@ class McpSettings(BaseModel):
 class EntitySettings(BaseModel):
     """Entity extraction and canonicalization configuration."""
 
-    extractor_chain: tuple[str, ...] = ("gliner", "spacy", "gazetteer")
+    extractor_chain: tuple[Literal["gliner", "spacy", "gazetteer", "llm"], ...] = (
+        "gliner",
+        "spacy",
+        "gazetteer",
+    )
     gazetteer_patterns_path: Path | None = None
     surface_embedder: str = "static"
-    cosine_threshold: float = 0.85
-    edit_distance_threshold: float = 0.15
+    cosine_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    edit_distance_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
 
 
 class ClusterSettings(BaseModel):
     """Clustering configuration."""
 
-    algorithm: str = "hdbscan"
-    reducer: str = "umap"
+    algorithm: Literal["hdbscan", "kmeans"] = "hdbscan"
+    reducer: Literal["umap", "pca", "none"] = "umap"
     cron: str | None = None
-    min_pages: int = 50
-    min_new_pages: int = 20
-    idle_default_minutes: int = 15
+    min_pages: int = Field(default=50, ge=1)
+    min_new_pages: int = Field(default=20, ge=1)
+    idle_default_minutes: int = Field(default=15, ge=1)
+
+    @field_validator("cron")
+    @classmethod
+    def _cron_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        fields = value.split()
+        if not 1 <= len(fields) <= 5:
+            msg = "cluster cron must contain 1 to 5 crontab fields"
+            raise ValueError(msg)
+        return value
 
 
 class LlmSettings(BaseModel):

@@ -2,8 +2,8 @@
 
 Layout: one ``chunks`` table holds the filterable payload plus the text with
 a native Lance FTS index (the shared sparse arm — tantivy was removed in
-lancedb 0.34); one ``vectors_{model_id}`` table per model holds that model's
-dense vectors plus a payload copy for filter pushdown.
+lancedb 0.34); one safe ``vectors_<slug>_<hash>`` table per model holds that
+model's dense vectors plus a payload copy for filter pushdown.
 
 The chunks table is ``optimize()``d after every write: lancedb 0.34's FTS
 scan over *unindexed* rows silently returns no results when a matching
@@ -20,11 +20,13 @@ import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import lancedb
 import pyarrow as pa
 from lancedb.index import FTS
 
+from refindery.adapters.vector.names import safe_model_name
 from refindery.application.ports.vector_store import (
     ArmTiming,
     ChunkPoint,
@@ -39,9 +41,12 @@ from refindery.domain.rollup import Vector
 
 _CHUNKS_TABLE = "chunks"
 
+if TYPE_CHECKING:
+    from lancedb.query import LanceVectorQueryBuilder
+
 
 def _vectors_table(model_id: str) -> str:
-    return f"vectors_{model_id}"
+    return safe_model_name(prefix="vectors", model_id=model_id)
 
 
 def _epoch(value: datetime) -> int:
@@ -248,9 +253,11 @@ class LanceDbVectorStore:
 
         def _query() -> list[ChunkHit]:
             table = self._db.open_table(_vectors_table(model_id))
-            search = table.search(vector.tolist(), vector_column_name="vector").limit(
-                limit
+            search = cast(
+                "LanceVectorQueryBuilder",
+                table.search(vector.tolist(), vector_column_name="vector"),
             )
+            search = search.metric("cosine").limit(limit)
             if (where := _where(filters)) is not None:
                 search = search.where(where)
             rows = search.to_list()
@@ -297,20 +304,33 @@ class LanceDbVectorStore:
 
     async def hybrid_query(self, query: HybridQuery) -> HybridHits:
         """Run both arms concurrently and fuse client-side."""
-        started = time.perf_counter()
-        dense_task = self.dense_query(
-            model_id=query.model_id,
-            vector=query.dense_vector,
-            limit=query.per_arm_limit,
-            filters=query.filters,
-        )
-        sparse_task = self.sparse_query(
-            text=query.sparse_text,
-            limit=query.per_arm_limit,
-            filters=query.filters,
-        )
-        dense, sparse = await asyncio.gather(dense_task, sparse_task)
-        arms_ms = (time.perf_counter() - started) * 1_000.0
+        dense_ms = 0.0
+        sparse_ms = 0.0
+
+        async def _dense() -> list[ChunkHit]:
+            nonlocal dense_ms
+            started = time.perf_counter()
+            result = await self.dense_query(
+                model_id=query.model_id,
+                vector=query.dense_vector,
+                limit=query.per_arm_limit,
+                filters=query.filters,
+            )
+            dense_ms = (time.perf_counter() - started) * 1_000.0
+            return result
+
+        async def _sparse() -> list[ChunkHit]:
+            nonlocal sparse_ms
+            started = time.perf_counter()
+            result = await self.sparse_query(
+                text=query.sparse_text,
+                limit=query.per_arm_limit,
+                filters=query.filters,
+            )
+            sparse_ms = (time.perf_counter() - started) * 1_000.0
+            return result
+
+        dense, sparse = await asyncio.gather(_dense(), _sparse())
 
         fuse_started = time.perf_counter()
         fused = rrf_fuse(dense=dense, sparse=sparse, k=query.rrf_k)[: query.fused_limit]
@@ -319,7 +339,7 @@ class LanceDbVectorStore:
             dense=dense,
             sparse=sparse,
             fused=fused,
-            timing=ArmTiming(dense_ms=arms_ms, sparse_ms=arms_ms, fuse_ms=fuse_ms),
+            timing=ArmTiming(dense_ms=dense_ms, sparse_ms=sparse_ms, fuse_ms=fuse_ms),
         )
 
     async def close(self) -> None:

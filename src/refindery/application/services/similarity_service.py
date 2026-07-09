@@ -8,6 +8,7 @@ import numpy as np
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.domain.errors import NoActiveModelError, PageNotFoundError
 from refindery.domain.ids import ClusterId, PageId
+from refindery.domain.models import PageStatus
 from refindery.domain.rollup import Vector
 
 
@@ -43,8 +44,11 @@ class SimilarityService:
         exclude: frozenset[PageId] = frozenset(),
     ) -> list[SimilarPage]:
         """Rank pages similar to ``page_id``; excludes the source itself."""
-        if await self._store.get_page(page_id) is None:
+        page = await self._store.get_page(page_id)
+        if page is None:
             raise PageNotFoundError(page_id)
+        if page.status is not PageStatus.INDEXED:
+            return []
         skip = frozenset({page_id, *exclude})
         match mediation:
             case Mediation.VECTOR:
@@ -58,7 +62,13 @@ class SimilarityService:
         if (model := await self._store.get_active_model()) is None:
             raise NoActiveModelError
         rows = await self._store.get_page_vectors(model_id=model.id)
-        return {pid: np.frombuffer(blob, dtype=np.float32) for pid, blob in rows}
+        pages = await self._store.get_pages([row.page_id for row in rows])
+        indexed_ids = {page.id for page in pages if page.status is PageStatus.INDEXED}
+        return {
+            row.page_id: np.frombuffer(row.vector, dtype=np.float32)
+            for row in rows
+            if row.page_id in indexed_ids
+        }
 
     async def _by_vector(
         self, page_id: PageId, *, k: int, skip: frozenset[PageId]
@@ -89,13 +99,16 @@ class SimilarityService:
         vectors = await self._vectors()
         source = vectors.get(page_id)
         scored: list[SimilarPage] = []
-        for pid, probability in members:
-            if pid in skip:
+        indexed = await self._store.get_pages([member.page_id for member in members])
+        indexed_ids = {page.id for page in indexed if page.status is PageStatus.INDEXED}
+        for member in members:
+            pid = member.page_id
+            if pid in skip or pid not in indexed_ids:
                 continue
             if source is not None and pid in vectors:
                 score = float(np.dot(source, vectors[pid]))
             else:
-                score = probability or 0.0
+                score = member.probability or 0.0
             scored.append(
                 SimilarPage(page_id=pid, score=score, reason=Mediation.CLUSTER)
             )
@@ -117,8 +130,12 @@ class SimilarityService:
                 if pid in skip:
                     continue
                 candidates[pid] = candidates.get(pid, 0.0) + weight
+        pages = await self._store.get_pages(list(candidates))
+        indexed_ids = {page.id for page in pages if page.status is PageStatus.INDEXED}
         scored: list[SimilarPage] = []
         for pid, shared_weight in candidates.items():
+            if pid not in indexed_ids:
+                continue
             other = await self._store.entities_for_page(pid)
             union_weight = shared_weight + sum(
                 (e.idf if e.idf is not None else 1.0)

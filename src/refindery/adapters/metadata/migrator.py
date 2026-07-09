@@ -6,6 +6,7 @@ recorded in ``schema_migrations``.
 """
 
 import logging
+import sqlite3
 from importlib import resources
 
 import aiosqlite
@@ -26,6 +27,22 @@ def load_migrations() -> list[tuple[int, str, str]]:
     return sorted(migrations)
 
 
+def _split_sql_statements(sql: str) -> list[str]:
+    """Split a migration script into complete SQLite statements."""
+    statements: list[str] = []
+    current: list[str] = []
+    for char in sql:
+        current.append(char)
+        candidate = "".join(current).strip()
+        if candidate and sqlite3.complete_statement(candidate):
+            statements.append(candidate)
+            current = []
+    trailing = "".join(current).strip()
+    if trailing:
+        statements.append(trailing)
+    return statements
+
+
 async def migrate(conn: aiosqlite.Connection) -> int:
     """Apply all unapplied migrations; return how many ran."""
     await conn.execute(
@@ -42,12 +59,19 @@ async def migrate(conn: aiosqlite.Connection) -> int:
         if version in applied:
             continue
         logger.info("applying migration %s", name)
-        await conn.executescript(sql)
-        await conn.execute(
-            "INSERT INTO schema_migrations (version, name, applied_at) "
-            "VALUES (?, ?, datetime('now'))",
-            (version, name),
-        )
-        await conn.commit()
+        await conn.execute("BEGIN")
+        try:
+            for statement in _split_sql_statements(sql):
+                await conn.execute(statement)
+            await conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) "
+                "VALUES (?, ?, datetime('now'))",
+                (version, name),
+            )
+        except Exception:
+            await conn.rollback()
+            raise
+        else:
+            await conn.commit()
         ran += 1
     return ran

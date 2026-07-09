@@ -1,0 +1,234 @@
+"""Integration tests for the SQLite metadata store."""
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
+from refindery.domain.ids import (
+    JobId,
+    PageId,
+    new_chunk_id,
+    new_job_id,
+    new_page_id,
+)
+from refindery.domain.models import (
+    Chunk,
+    EmbeddingModel,
+    Job,
+    JobKind,
+    JobStatus,
+    ModelStatus,
+    Page,
+    PageStatus,
+)
+
+NOW = datetime(2026, 7, 8, 12, 0, 0, tzinfo=UTC)
+
+
+def _page(canonical_url: str = "https://example.com/a") -> Page:
+    return Page(
+        id=new_page_id(),
+        canonical_url=canonical_url,
+        original_url=f"{canonical_url}?utm_source=x",
+        domain="example.com",
+        title="A Title",
+        body_text="hello world",
+        content_hash="abc123",
+        source="extension",
+        metadata={"k": "v"},
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+        visit_count=1,
+        indexed_at=None,
+        status=PageStatus.QUEUED,
+    )
+
+
+def _job(idempotency_key: str = "index_page:p1:h1") -> Job:
+    return Job(
+        id=new_job_id(),
+        kind=JobKind.INDEX_PAGE,
+        payload={"page_id": "p1"},
+        status=JobStatus.PENDING,
+        idempotency_key=idempotency_key,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+
+def _model(model_id: str = "voyage-3.5", *, is_active: bool = False) -> EmbeddingModel:
+    return EmbeddingModel(
+        id=model_id,
+        provider="voyage",
+        model_name=model_id,
+        dim=32,
+        max_input_tokens=32_000,
+        is_active=is_active,
+        status=ModelStatus.READY,
+        created_at=NOW,
+    )
+
+
+@pytest.fixture
+async def store(tmp_path):
+    async with SqliteMetadataStore(tmp_path / "test.db") as s:
+        await s.migrate()
+        yield s
+
+
+async def test_page_roundtrip(store):
+    page = _page()
+    await store.insert_page(page)
+    got = await store.get_page(page.id)
+    assert got == page
+    assert (await store.get_page_by_canonical_url(page.canonical_url)) == page
+    assert await store.get_page(PageId("missing")) is None
+
+
+async def test_revisit_bumps_count_and_seen(store):
+    page = _page()
+    await store.insert_page(page)
+    later = NOW + timedelta(hours=3)
+    await store.record_revisit(page_id=page.id, seen_at=later)
+    got = await store.get_page(page.id)
+    assert got is not None
+    assert got.visit_count == 2
+    assert got.last_seen_at == later
+    assert got.first_seen_at == NOW
+
+
+async def test_page_status_and_body(store):
+    page = _page()
+    page.body_text = None
+    page.content_hash = None
+    await store.insert_page(page)
+    await store.set_page_body(
+        page_id=page.id, body_text="fetched", content_hash="h2", title="T2"
+    )
+    await store.set_page_status(
+        page_id=page.id, status=PageStatus.INDEXED, indexed_at=NOW
+    )
+    got = await store.get_page(page.id)
+    assert got is not None
+    assert got.body_text == "fetched"
+    assert got.title == "T2"
+    assert got.status is PageStatus.INDEXED
+    assert got.indexed_at == NOW
+
+
+async def test_chunks_replace_and_hydrate_ordered(store):
+    page = _page()
+    await store.insert_page(page)
+    chunks = [
+        Chunk(
+            id=new_chunk_id(),
+            page_id=page.id,
+            ordinal=i,
+            text=f"chunk {i}",
+            token_count=3,
+            char_start=i * 10,
+            char_end=i * 10 + 8,
+        )
+        for i in range(3)
+    ]
+    await store.replace_chunks(page_id=page.id, chunks=chunks)
+    ids = [chunks[2].id, chunks[0].id]
+    got = await store.get_chunks(ids)
+    assert [c.id for c in got] == ids
+
+    # replacing removes old chunks
+    await store.replace_chunks(page_id=page.id, chunks=chunks[:1])
+    assert await store.get_chunks([chunks[2].id]) == []
+
+
+async def test_page_vectors_upsert(store):
+    page = _page()
+    await store.insert_page(page)
+    await store.register_model(_model())
+    await store.upsert_page_vector(
+        page_id=page.id, model_id="voyage-3.5", vector=b"\x00\x01"
+    )
+    await store.upsert_page_vector(
+        page_id=page.id, model_id="voyage-3.5", vector=b"\x02\x03"
+    )
+    vectors = await store.get_page_vectors(model_id="voyage-3.5")
+    assert vectors == [(page.id, b"\x02\x03")]
+
+
+async def test_model_registry_single_active(store):
+    await store.register_model(_model("m-a", is_active=True))
+    await store.register_model(_model("m-b"))
+    await store.activate_model("m-b")
+    active = await store.get_active_model()
+    assert active is not None
+    assert active.id == "m-b"
+    models = await store.list_models(statuses=frozenset({ModelStatus.READY}))
+    assert {m.id for m in models} == {"m-a", "m-b"}
+
+
+async def test_job_idempotency(store):
+    assert await store.create_job(_job()) is True
+    assert await store.create_job(_job()) is False  # same idempotency key
+
+
+async def test_job_lifecycle(store):
+    job = _job()
+    await store.create_job(job)
+    await store.mark_job_running(
+        job_id=job.id, lease_until=NOW + timedelta(minutes=15), now=NOW
+    )
+    got = await store.get_job(job.id)
+    assert got is not None
+    assert got.status is JobStatus.RUNNING
+    await store.mark_job_failed(job_id=job.id, attempts=1, last_error="boom", now=NOW)
+    await store.mark_job_dead(job_id=job.id, last_error="boom", now=NOW)
+    dead = await store.list_jobs(status=JobStatus.DEAD)
+    assert [j.id for j in dead] == [job.id]
+    reset = await store.reset_job_for_retry(job_id=job.id, now=NOW)
+    assert reset.status is JobStatus.PENDING
+    assert reset.attempts == 0
+
+
+async def test_expired_lease_recovery(store):
+    job = _job()
+    await store.create_job(job)
+    await store.mark_job_running(
+        job_id=job.id, lease_until=NOW + timedelta(minutes=15), now=NOW
+    )
+    # not yet expired
+    assert await store.reset_expired_leases(now=NOW + timedelta(minutes=1)) == []
+    expired = await store.reset_expired_leases(now=NOW + timedelta(minutes=16))
+    assert [j.id for j in expired] == [job.id]
+    pending = await store.list_pending_jobs()
+    assert [j.id for j in pending] == [job.id]
+
+
+async def test_reset_retry_missing_job_raises(store):
+    from refindery.domain.errors import JobNotFoundError
+
+    with pytest.raises(JobNotFoundError):
+        await store.reset_job_for_retry(job_id=JobId("nope"), now=NOW)
+
+
+async def test_page_delete_cascades_chunks_and_vectors(store):
+    page = _page()
+    await store.insert_page(page)
+    await store.register_model(_model())
+    chunk = Chunk(
+        id=new_chunk_id(),
+        page_id=page.id,
+        ordinal=0,
+        text="c",
+        token_count=1,
+        char_start=0,
+        char_end=1,
+    )
+    await store.replace_chunks(page_id=page.id, chunks=[chunk])
+    await store.upsert_page_vector(
+        page_id=page.id, model_id="voyage-3.5", vector=b"\x00"
+    )
+    await store.conn.execute("DELETE FROM pages WHERE id = ?", (page.id,))
+    await store.conn.commit()
+    assert await store.get_chunks([chunk.id]) == []
+    assert await store.get_page_vectors(model_id="voyage-3.5") == []

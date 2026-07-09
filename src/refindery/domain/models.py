@@ -1,0 +1,249 @@
+"""Core domain entities and their status enums.
+
+These are plain dataclasses, not pydantic models: rows come from our own
+migrations, so re-validating them per row buys nothing. Pydantic lives at
+trust boundaries (HTTP requests/responses, fetched content, settings).
+"""
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+
+from refindery.domain.ids import BlacklistId, ChunkId, JobId, PageId
+
+
+class PageStatus(StrEnum):
+    """Lifecycle of a page through the indexing pipeline."""
+
+    QUEUED = "queued"
+    INDEXING = "indexing"
+    INDEXED = "indexed"
+    FAILED = "failed"
+    DEAD = "dead"
+
+
+class ModelStatus(StrEnum):
+    """Lifecycle of a registered embedding model."""
+
+    REGISTERED = "registered"
+    BACKFILLING = "backfilling"
+    READY = "ready"
+    RETIRED = "retired"
+
+
+class JobStatus(StrEnum):
+    """Ledger status of a durable job."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    DEAD = "dead"
+
+
+class JobKind(StrEnum):
+    """Kinds of durable jobs the queue executes."""
+
+    INDEX_PAGE = "index_page"
+    FETCH_AND_INDEX = "fetch_and_index"
+    BACKFILL_MODEL = "backfill_model"
+    CLUSTER = "cluster"
+    LABEL_CLUSTERS = "label_clusters"
+    CANONICALIZE_ENTITIES = "canonicalize_entities"
+    PURGE_VECTORS = "purge_vectors"
+
+
+class BlacklistKind(StrEnum):
+    """Whether a blacklist rule matches a URL exactly or a domain suffix."""
+
+    URL = "url"
+    DOMAIN = "domain"
+
+
+@dataclass(slots=True)
+class Page:
+    """One canonical web page. One row per canonical_url; never versioned.
+
+    ``body_text`` and ``content_hash`` are ``None`` only while a
+    ``fetch_and_index`` job is still resolving the body.
+    """
+
+    id: PageId
+    canonical_url: str
+    original_url: str
+    domain: str
+    title: str | None
+    body_text: str | None
+    content_hash: str | None
+    source: str | None
+    metadata: dict[str, object] | None
+    first_seen_at: datetime
+    last_seen_at: datetime
+    visit_count: int
+    indexed_at: datetime | None
+    status: PageStatus
+
+
+@dataclass(frozen=True, slots=True)
+class Chunk:
+    """A canonical, model-independent span of a page's body text."""
+
+    id: ChunkId
+    page_id: PageId
+    ordinal: int
+    text: str
+    token_count: int
+    char_start: int
+    char_end: int
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingModel:
+    """A registered embedding model and its vector space."""
+
+    id: str
+    provider: str
+    model_name: str
+    dim: int
+    max_input_tokens: int
+    is_active: bool
+    status: ModelStatus
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class Job:
+    """Durable job ledger row; huey executes, this row is the source of truth."""
+
+    id: JobId
+    kind: JobKind
+    payload: dict[str, str]
+    status: JobStatus
+    idempotency_key: str
+    created_at: datetime
+    updated_at: datetime
+    attempts: int = 0
+    max_attempts: int = 5
+    lease_until: datetime | None = None
+    last_error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BlacklistRule:
+    """A forget rule: exact canonical URL or domain suffix."""
+
+    id: BlacklistId
+    pattern: str
+    kind: BlacklistKind
+    created_at: datetime
+    reason: str | None = None
+
+
+@dataclass(slots=True)
+class Cluster:
+    """A stable-id cluster of pages."""
+
+    id: str
+    label: str | None
+    keywords: list[str]
+    size: int
+    model_id: str
+    created_at: datetime
+    updated_at: datetime
+    tombstoned_at: datetime | None = None
+    centroid: bytes | None = None
+
+
+@dataclass(slots=True)
+class ClusterRun:
+    """One clustering run's record."""
+
+    id: str
+    trigger: str
+    algorithm: str
+    params: dict[str, object]
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    n_pages: int | None = None
+    n_clusters: int | None = None
+    n_noise: int | None = None
+
+
+@dataclass(slots=True)
+class ModelBackfill:
+    """Resumable backfill state for one model."""
+
+    model_id: str
+    total_chunks: int
+    total_tokens: int
+    started_at: datetime
+    updated_at: datetime
+    cursor_page_id: str | None = None
+    embedded_chunks: int = 0
+    finished_at: datetime | None = None
+    last_error: str | None = None
+
+
+class TombstoneStatus(StrEnum):
+    """Lifecycle of a purged page's vector-deletion tombstone."""
+
+    PENDING = "pending"
+    DELETED = "deleted"
+    VERIFIED = "verified"
+
+
+@dataclass(frozen=True, slots=True)
+class VectorTombstone:
+    """A purged page whose vectors must be (verifiably) deleted."""
+
+    page_id: PageId
+    status: TombstoneStatus
+    created_at: datetime
+    updated_at: datetime
+    last_error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedContent:
+    """Output of a content extractor: markdown body plus optional title."""
+
+    body_text: str
+    title: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Mention:
+    """A single entity mention found in page text."""
+
+    surface_form: str
+    type: str
+    char_start: int | None = None
+    char_end: int | None = None
+    chunk_id: ChunkId | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IngestQueued:
+    """Outcome: a new page was accepted and queued for indexing."""
+
+    page_id: PageId
+
+
+@dataclass(frozen=True, slots=True)
+class IngestRevisit:
+    """Outcome: the canonical URL was already known; visit recorded."""
+
+    page_id: PageId
+    status: PageStatus
+    content_hash_differs: bool
+
+
+@dataclass(frozen=True, slots=True)
+class IngestBlacklisted:
+    """Outcome: the URL matched a blacklist rule; nothing stored."""
+
+    pattern: str
+
+
+IngestOutcome = IngestQueued | IngestRevisit | IngestBlacklisted

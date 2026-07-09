@@ -351,7 +351,7 @@ class SearchService:
             by_id = await indexed_pages_by_id(
                 self._store, [*exact_pages, *[p.page_id for p in pages]]
             )
-            cluster_refs = {
+            cluster_refs: dict[PageId, ClusterRef] = {
                 page_id: ClusterRef(id=cluster.id, label=cluster.label)
                 for page_id, cluster in (
                     await self._store.clusters_for_pages(list(by_id))

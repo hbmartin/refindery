@@ -21,3 +21,8 @@ Always run ruff and pytest and ty and pyrefly and lizard (with uv) after making 
 - Use Structural Pattern Matching (match...case) where applicable
 - Always use pathlib.Path for file operations, never use os.path
 - Inputs (e.g. HTTP requests) and call results (e.g. HTTP requests not already wrapped in a library) must be validated and made type safe with pydantic.
+
+# Update CLAUDE.md
+Update CLAUDE.md with notes, learnings, findings, or other useful patters you have learned
+
+# Notes

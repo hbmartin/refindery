@@ -104,11 +104,12 @@ def ndcg_at_k(
     """
     if not relevant:
         return None
+    items = _ranked_items(ranked, absolute_ranks)
     if k <= 0:
         return 0.0
     dcg = sum(
         1.0 / math.log2(rank + 1)
-        for rank, item in _ranked_items(ranked, absolute_ranks)
+        for rank, item in items
         if rank <= k and item in relevant
     )
     ideal = sum(

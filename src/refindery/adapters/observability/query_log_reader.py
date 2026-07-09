@@ -60,7 +60,7 @@ class DuckDbQueryLogReader:
         self._path = path
 
     def read_runs(self, *, since: datetime | None = None) -> list[LoggedRun]:
-        """All logged runs, treating a timezone-naive lower bound as UTC."""
+        """All logged runs, oldest first; a timezone-naive lower bound is UTC."""
         if since is not None and since.tzinfo is None:
             since = since.replace(tzinfo=UTC)
         with duckdb.connect(str(self._path), read_only=True) as conn:

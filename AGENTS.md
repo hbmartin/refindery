@@ -47,3 +47,6 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
   before computing or dividing by ideal gain.
 - Force a non-UTC DuckDB session in naive-`TIMESTAMPTZ` regression tests so the
   timezone boundary remains observable on UTC CI hosts.
+- Exclude paginated rows (`offset > 0`) from rerank-lift eligibility: an offset
+  slice cannot see earlier pages, so final-vs-pool nDCG no longer isolates
+  reranking and lift skews negative.

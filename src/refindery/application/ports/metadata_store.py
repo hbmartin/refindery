@@ -395,6 +395,10 @@ class MetadataStore(Protocol):
         """Return the live cluster containing this page, if any."""
         ...
 
+    async def clusters_for_pages(self, page_ids: list[PageId]) -> dict[PageId, Cluster]:
+        """Live cluster per page id, in one query; pages without one are absent."""
+        ...
+
     async def set_cluster_label(self, *, cluster_id: ClusterId, label: str) -> None:
         """Attach an LLM label."""
         ...

@@ -10,6 +10,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import cast
 from urllib.parse import urlsplit
 
 from refindery.application.ports.clock import Clock
@@ -72,12 +73,9 @@ class ForgetService:
         if url is not None:
             pattern = canonicalize(url, rules=self._rules).url
             kind = BlacklistKind.URL
-        elif domain is not None:
-            pattern = self._normalize_domain(domain)
-            kind = BlacklistKind.DOMAIN
         else:
-            msg = "provide exactly one of url or domain"
-            raise ValueError(msg)
+            pattern = self._normalize_domain(cast("str", domain))
+            kind = BlacklistKind.DOMAIN
 
         rule = BlacklistRule(
             id=new_blacklist_id(),

@@ -63,12 +63,6 @@ def _filter(filters: StoreFilter | None) -> qm.Filter | None:
                 ),
             )
         )
-    if filters.cluster_id is not None:
-        must.append(
-            qm.FieldCondition(
-                key="cluster_id", match=qm.MatchValue(value=filters.cluster_id)
-            )
-        )
     if filters.page_ids is not None:
         values = sorted(filters.page_ids) or ["__match_nothing__"]
         must.append(qm.FieldCondition(key="page_id", match=qm.MatchAny(any=values)))

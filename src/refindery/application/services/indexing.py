@@ -196,6 +196,8 @@ class IndexingService:
         pages = await self._store.indexed_pages_missing_entity_extraction()
         reconciled = 0
         for page in pages:
+            if page.content_hash is None:
+                continue
             try:
                 await self._enqueue_entity_extraction(page)
             except Exception:  # noqa: BLE001 — recovery must keep scanning pages

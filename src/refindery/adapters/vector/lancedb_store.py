@@ -68,8 +68,6 @@ def _where(filters: StoreFilter | None) -> str | None:
         clauses.append(f"first_seen_at >= {_epoch(filters.after)}")
     if filters.before is not None:
         clauses.append(f"first_seen_at < {_epoch(filters.before)}")
-    if filters.cluster_id is not None:
-        clauses.append(f"cluster_id = {_sql_quote(filters.cluster_id)}")
     if filters.page_ids is not None:
         if not filters.page_ids:
             clauses.append("page_id = ''")  # matches nothing

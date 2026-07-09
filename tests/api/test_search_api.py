@@ -395,7 +395,14 @@ async def test_pagination_requires_candidates_to_cover_offset(harness):
 async def test_pagination_offset_lands_in_query_log(harness, tmp_path):
     client, _container, _ids = harness
     response = await client.post(
-        "/v1/search", json={"query": "zanzibar", "k": 5, "offset": 1}, headers=AUTH
+        "/v1/search",
+        json={
+            "query": "https://arch.example/hexagonal",
+            "k": 5,
+            "offset": 1,
+            "recency_half_life_days": 30.0,
+        },
+        headers=AUTH,
     )
     query_id = response.json()["query_id"]
 
@@ -405,7 +412,10 @@ async def test_pagination_offset_lands_in_query_log(harness, tmp_path):
         conn = duckdb.connect(str(tmp_path / "obs.duckdb"))
         try:
             rows = conn.execute(
-                "SELECT params ->> 'offset', final_pages[1].rank FROM query_log "
+                "SELECT CAST(params ->> 'offset' AS INTEGER), "
+                "CAST(params ->> 'exact_match' AS BOOLEAN), "
+                "CAST(params ->> 'recency_half_life_days' AS DOUBLE), "
+                "final_pages[1].rank FROM query_log "
                 "WHERE query_id = ?",
                 [query_id],
             ).fetchall()
@@ -416,8 +426,10 @@ async def test_pagination_offset_lands_in_query_log(harness, tmp_path):
         await asyncio.sleep(0.2)
 
     assert rows, "query row never landed in the log"
-    offset, first_rank = rows[0]
-    assert offset == "1"
+    offset, exact_match, recency_half_life_days, first_rank = rows[0]
+    assert offset == 1
+    assert exact_match is True
+    assert recency_half_life_days == pytest.approx(30.0)
     # ranks are absolute: the first logged page of an offset=1 slice is rank 2
     assert first_rank == 2
 

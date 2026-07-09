@@ -45,6 +45,15 @@ class TestTokenSettings:
         with pytest.raises(ValidationError, match="at least one scope"):
             TokenSpec(name="none", token=SecretStr("t"), scopes=())
 
+    @pytest.mark.parametrize("token", ["", "  \t"])
+    def test_blank_tokens_rejected(self, token):
+        with pytest.raises(ValidationError, match="token must not be blank"):
+            make_settings(auth_token=SecretStr(token))
+
+    def test_blank_named_token_rejected(self):
+        with pytest.raises(ValidationError, match="token must not be blank"):
+            TokenSpec(name="blank", token=SecretStr(""))
+
     def test_duplicate_names_rejected(self):
         with pytest.raises(ValidationError, match="unique"):
             make_settings(
@@ -52,6 +61,30 @@ class TestTokenSettings:
                     TokenSpec(name="dup", token=SecretStr("a")),
                     TokenSpec(name="dup", token=SecretStr("b")),
                 )
+            )
+
+    def test_duplicate_secrets_rejected(self):
+        with pytest.raises(ValidationError, match="token secrets must be unique"):
+            make_settings(
+                auth_tokens=(
+                    TokenSpec(
+                        name="reader",
+                        token=SecretStr("same"),
+                        scopes=(Scope.READ,),
+                    ),
+                    TokenSpec(
+                        name="writer",
+                        token=SecretStr("same"),
+                        scopes=(Scope.WRITE,),
+                    ),
+                )
+            )
+
+    def test_duplicate_legacy_and_named_secrets_rejected(self):
+        with pytest.raises(ValidationError, match="token secrets must be unique"):
+            make_settings(
+                auth_token=SecretStr("same"),
+                auth_tokens=(TokenSpec(name="agent", token=SecretStr("same")),),
             )
 
     def test_json_env_parsing(self, monkeypatch):

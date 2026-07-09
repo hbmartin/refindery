@@ -26,6 +26,7 @@ SELECT
   active_model,
   reranker_model,
   list_transform(final_pages, p -> p.page_id) AS final_page_ids,
+  list_transform(final_pages, p -> p.rank) AS final_page_ranks,
   list_transform(candidate_set, c -> c.page_id) AS candidate_page_ids
 FROM query_log
 WHERE ts >= coalesce(?, ts)
@@ -59,7 +60,9 @@ class DuckDbQueryLogReader:
         self._path = path
 
     def read_runs(self, *, since: datetime | None = None) -> list[LoggedRun]:
-        """All logged runs, oldest first; optionally bounded below by ts."""
+        """All logged runs, treating a timezone-naive lower bound as UTC."""
+        if since is not None and since.tzinfo is None:
+            since = since.replace(tzinfo=UTC)
         with duckdb.connect(str(self._path), read_only=True) as conn:
             rows = conn.execute(_RUNS_SQL, [since]).fetchall()
         return [
@@ -72,6 +75,7 @@ class DuckDbQueryLogReader:
                 active_model=active_model,
                 reranker_model=reranker_model,
                 final_page_ids=tuple(PageId(p) for p in final_page_ids or []),
+                final_page_ranks=tuple(int(rank) for rank in final_page_ranks or []),
                 prererank_page_ids=_first_occurrence(candidate_page_ids or []),
             )
             for (
@@ -83,6 +87,7 @@ class DuckDbQueryLogReader:
                 active_model,
                 reranker_model,
                 final_page_ids,
+                final_page_ranks,
                 candidate_page_ids,
             ) in rows
         ]

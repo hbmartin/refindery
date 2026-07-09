@@ -262,14 +262,33 @@ class EvalService:
     def _score_run(
         self, run: LoggedRun, *, relevant: frozenset[PageId], k: int
     ) -> QueryScore | None:
-        ndcg = ndcg_at_k(run.final_page_ids, relevant, k)
-        recall = recall_at_k(run.final_page_ids, relevant, k)
+        ndcg = ndcg_at_k(
+            run.final_page_ids,
+            relevant,
+            k,
+            absolute_ranks=run.final_page_ranks,
+        )
+        recall = recall_at_k(
+            run.final_page_ids,
+            relevant,
+            k,
+            absolute_ranks=run.final_page_ranks,
+        )
         pool = run.prererank_page_ids
         recall_candidates = recall_at_k(pool, relevant, len(pool))
         if ndcg is None or recall is None or recall_candidates is None:
             return None
         lift: float | None = None
-        if run.reranker_model is not None and run.params.get("rollup", "max") == "max":
+        recency_is_absent = run.kind == "compare_arm" or (
+            "recency_half_life_days" in run.params
+            and run.params["recency_half_life_days"] is None
+        )
+        if (
+            run.reranker_model is not None
+            and run.params.get("rollup", "max") == "max"
+            and not run.params.get("exact_match", False)
+            and recency_is_absent
+        ):
             prererank_ndcg = ndcg_at_k(pool, relevant, k)
             if prererank_ndcg is not None:
                 lift = ndcg - prererank_ndcg
@@ -278,7 +297,11 @@ class EvalService:
             query_text=run.query_text,
             model=run.active_model,
             ndcg=ndcg,
-            reciprocal_rank=reciprocal_rank(run.final_page_ids, relevant),
+            reciprocal_rank=reciprocal_rank(
+                run.final_page_ids,
+                relevant,
+                absolute_ranks=run.final_page_ranks,
+            ),
             recall=recall,
             recall_candidates=recall_candidates,
             rerank_lift=lift,

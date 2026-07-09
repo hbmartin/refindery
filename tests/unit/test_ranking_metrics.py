@@ -83,6 +83,10 @@ class TestNdcg:
     def test_no_relevant_is_none(self):
         assert ndcg_at_k(ABC, set(), 5) is None
 
+    @pytest.mark.parametrize("k", [0, -1])
+    def test_non_positive_k_is_zero(self, k: int):
+        assert ndcg_at_k(ABC, {"a"}, k) == 0.0
+
     def test_nothing_found_is_zero(self):
         assert ndcg_at_k(["x", "y"], {"a"}, 2) == 0.0
 

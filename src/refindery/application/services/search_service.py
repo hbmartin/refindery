@@ -139,6 +139,7 @@ class SearchService:
         clock: Clock,
         reranker: Reranker | None = None,
         rules: CanonicalizationRules | None = None,
+        default_recency_half_life_days: float | None = None,
     ) -> None:
         self._store = store
         self._vector_store = vector_store
@@ -148,6 +149,7 @@ class SearchService:
         self._clock = clock
         self._reranker = reranker
         self._rules = rules or CanonicalizationRules()
+        self._default_recency_half_life_days = default_recency_half_life_days
 
     async def search(self, request: SearchQuery) -> SearchOutcome:
         """Run the full pipeline and log the execution."""
@@ -159,7 +161,12 @@ class SearchService:
         embedder = self._registry.embedder_for(model)
 
         store_filter = await self._resolve_filters(request.filters)
-        exact_pages = await self._exact_match_pages(request.query)
+        exact_pages = await self._exact_match_pages(request.query, filters=store_filter)
+        recency_half_life_days = (
+            request.recency_half_life_days
+            if request.recency_half_life_days is not None
+            else self._default_recency_half_life_days
+        )
 
         with timer.stage("embed"):
             query_vector = await embedder.embed_query(request.query)
@@ -186,7 +193,11 @@ class SearchService:
                 chunks=scored, strategy=request.rollup, top_m=request.rollup_m
             )
         hydrated = await self._hydrate(
-            request, pages, exact_pages=exact_pages, timer=timer
+            request,
+            pages,
+            exact_pages=exact_pages,
+            recency_half_life_days=recency_half_life_days,
+            timer=timer,
         )
 
         suggestions = await self._suggestions(request, hydrated)
@@ -226,17 +237,27 @@ class SearchService:
                         entity=filters.entity, matches=len(matches)
                     )
                 page_ids = frozenset(matches)
+        if filters.cluster_id is not None:
+            cluster_id = ClusterId(filters.cluster_id)
+            cluster = await self._store.get_cluster(cluster_id)
+            if cluster is None or cluster.tombstoned_at is not None:
+                cluster_page_ids: frozenset[PageId] = frozenset()
+            else:
+                members = await self._store.cluster_members(cluster_id)
+                cluster_page_ids = frozenset(member.page_id for member in members)
+            page_ids = (
+                cluster_page_ids if page_ids is None else page_ids & cluster_page_ids
+            )
         return StoreFilter(
             domain=filters.domain,
             after=filters.after,
             before=filters.before,
-            cluster_id=(
-                None if filters.cluster_id is None else ClusterId(filters.cluster_id)
-            ),
             page_ids=page_ids,
         )
 
-    async def _exact_match_pages(self, query: str) -> list[PageId]:
+    async def _exact_match_pages(
+        self, query: str, *, filters: StoreFilter | None
+    ) -> list[PageId]:
         """URL or bare-domain queries pin exact matches at rank 1."""
         text = query.strip()
         if text.startswith(("http://", "https://")):
@@ -247,16 +268,40 @@ class SearchService:
             page = await self._store.get_page_by_canonical_url(canonical.url)
             return (
                 []
-                if page is None or page.status is not PageStatus.INDEXED
+                if (
+                    page is None
+                    or page.status is not PageStatus.INDEXED
+                    or not self._page_matches_filter(page, filters)
+                )
                 else [page.id]
             )
         if _BARE_DOMAIN.match(text.lower()):
-            return await self._store.list_page_ids_by_domain(
+            page_ids = await self._store.list_page_ids_by_domain(
                 domain=text.lower().removeprefix("www."),
                 limit=5,
                 status=PageStatus.INDEXED,
             )
+            if filters is None:
+                return page_ids
+            by_id = await indexed_pages_by_id(self._store, page_ids)
+            return [
+                page_id
+                for page_id in page_ids
+                if (page := by_id.get(page_id)) is not None
+                and self._page_matches_filter(page, filters)
+            ]
         return []
+
+    @staticmethod
+    def _page_matches_filter(page: Page, filters: StoreFilter | None) -> bool:
+        if filters is None:
+            return True
+        return (
+            (filters.domain is None or page.domain == filters.domain)
+            and (filters.after is None or page.first_seen_at >= filters.after)
+            and (filters.before is None or page.first_seen_at < filters.before)
+            and (filters.page_ids is None or page.id in filters.page_ids)
+        )
 
     async def _rerank(
         self, request: SearchQuery, fused: list[ChunkHit], timer: StageTimer
@@ -299,6 +344,7 @@ class SearchService:
         pages: list[PageScore],
         *,
         exact_pages: list[PageId],
+        recency_half_life_days: float | None,
         timer: StageTimer,
     ) -> list[SearchResultPage]:
         with timer.stage("hydrate"):
@@ -306,7 +352,7 @@ class SearchService:
                 self._store, [*exact_pages, *[p.page_id for p in pages]]
             )
 
-            if request.recency_half_life_days is not None:
+            if recency_half_life_days is not None:
                 pages = apply_recency_decay(
                     pages,
                     first_seen={
@@ -315,19 +361,21 @@ class SearchService:
                         if p.page_id in by_id
                     },
                     now=self._clock.now(),
-                    half_life_days=request.recency_half_life_days,
+                    half_life_days=recency_half_life_days,
                 )
 
             results: list[SearchResultPage] = []
             seen: set[PageId] = set()
             for page_id in exact_pages:
                 if (page := by_id.get(page_id)) is not None:
+                    cluster = await self._cluster_ref(page.id)
                     results.append(
                         SearchResultPage(
                             page=page,
                             score=_EXACT_MATCH_SCORE,
                             chunks=(),
                             exact_match=True,
+                            cluster=cluster,
                         )
                     )
                     seen.add(page_id)
@@ -347,7 +395,6 @@ class SearchService:
                     [chunk.chunk_id for chunk in top_chunks]
                 )
                 chunk_by_id = {chunk.id: chunk for chunk in chunk_rows}
-                cluster = await self._store.cluster_for_page(page.id)
                 results.append(
                     SearchResultPage(
                         page=page,
@@ -357,15 +404,17 @@ class SearchService:
                             for c in top_chunks
                             if c.chunk_id in chunk_by_id
                         ),
-                        cluster=(
-                            None
-                            if cluster is None
-                            else ClusterRef(id=cluster.id, label=cluster.label)
-                        ),
+                        cluster=await self._cluster_ref(page.id),
                     )
                 )
                 seen.add(page_score.page_id)
         return results
+
+    async def _cluster_ref(self, page_id: PageId) -> ClusterRef | None:
+        cluster = await self._store.cluster_for_page(page_id)
+        return (
+            None if cluster is None else ClusterRef(id=cluster.id, label=cluster.label)
+        )
 
     async def _suggestions(
         self, request: SearchQuery, results: list[SearchResultPage]

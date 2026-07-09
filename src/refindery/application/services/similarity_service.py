@@ -1,11 +1,16 @@
 """Page similarity: vector mediation now, cluster/entity mediations in M4."""
 
+import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
 import numpy as np
 
-from refindery.application.ports.metadata_store import MetadataStore
+from refindery.application.ports.metadata_store import (
+    ClusterMemberRow,
+    MetadataStore,
+    PageVectorRow,
+)
 from refindery.application.services.indexed_pages import indexed_page_ids
 from refindery.domain.errors import NoActiveModelError, PageNotFoundError
 from refindery.domain.ids import ClusterId, PageId
@@ -64,6 +69,12 @@ class SimilarityService:
             raise NoActiveModelError
         rows = await self._store.get_page_vectors(model_id=model.id)
         indexed_ids = await indexed_page_ids(self._store, [row.page_id for row in rows])
+        return await asyncio.to_thread(self._decode_vectors, rows, indexed_ids)
+
+    @staticmethod
+    def _decode_vectors(
+        rows: list[PageVectorRow], indexed_ids: frozenset[PageId]
+    ) -> dict[PageId, Vector]:
         return {
             row.page_id: np.frombuffer(row.vector, dtype=np.float32)
             for row in rows
@@ -77,6 +88,18 @@ class SimilarityService:
         source = vectors.get(page_id)
         if source is None:
             return []
+        return await asyncio.to_thread(
+            self._rank_vectors, vectors, source=source, k=k, skip=skip
+        )
+
+    @staticmethod
+    def _rank_vectors(
+        vectors: dict[PageId, Vector],
+        *,
+        source: Vector,
+        k: int,
+        skip: frozenset[PageId],
+    ) -> list[SimilarPage]:
         scored = [
             SimilarPage(
                 page_id=pid,
@@ -98,10 +121,30 @@ class SimilarityService:
         members = await self._store.cluster_members(ClusterId(cluster.id))
         vectors = await self._vectors()
         source = vectors.get(page_id)
-        scored: list[SimilarPage] = []
         indexed_ids = await indexed_page_ids(
             self._store, [member.page_id for member in members]
         )
+        return await asyncio.to_thread(
+            self._rank_cluster_members,
+            members,
+            indexed_ids,
+            vectors,
+            source=source,
+            k=k,
+            skip=skip,
+        )
+
+    @staticmethod
+    def _rank_cluster_members(
+        members: list[ClusterMemberRow],
+        indexed_ids: frozenset[PageId],
+        vectors: dict[PageId, Vector],
+        *,
+        source: Vector | None,
+        k: int,
+        skip: frozenset[PageId],
+    ) -> list[SimilarPage]:
+        scored: list[SimilarPage] = []
         for member in members:
             pid = member.page_id
             if pid in skip or pid not in indexed_ids:

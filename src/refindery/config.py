@@ -147,16 +147,23 @@ class EntitySettings(BaseModel):
         "gazetteer",
     )
     gazetteer_patterns_path: Path | None = None
-    surface_embedder: str = "static"
+    surface_embedder: Literal["static", "none"] = "static"
     cosine_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     edit_distance_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
+
+
+class SearchSettings(BaseModel):
+    """Search ranking defaults."""
+
+    recency_half_life_days: float | None = Field(default=None, gt=0)
 
 
 class ClusterSettings(BaseModel):
     """Clustering configuration."""
 
-    algorithm: Literal["hdbscan", "kmeans"] = "hdbscan"
+    algorithm: Literal["hdbscan", "kmeans", "leiden"] = "hdbscan"
     reducer: Literal["umap", "pca", "none"] = "umap"
+    leiden_resolution: float = Field(default=1.0, gt=0)
     cron: str | None = None
     min_pages: int = Field(default=50, ge=1)
     min_new_pages: int = Field(default=20, ge=1)
@@ -219,6 +226,7 @@ class Settings(BaseSettings):
     jobs: JobsSettings = JobsSettings()
     mcp: McpSettings = McpSettings()
     entity: EntitySettings = EntitySettings()
+    search: SearchSettings = SearchSettings()
     cluster: ClusterSettings = ClusterSettings()
     llm: LlmSettings = LlmSettings()
     observability: ObservabilitySettings = ObservabilitySettings()

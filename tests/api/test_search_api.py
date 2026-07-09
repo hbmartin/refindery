@@ -11,7 +11,8 @@ import httpx
 import pytest
 
 from refindery.api.app import create_app
-from refindery.domain.models import PageStatus
+from refindery.domain.ids import ClusterId
+from refindery.domain.models import Cluster, Mention, PageStatus
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
 
 AUTH = {"Authorization": f"Bearer {TEST_TOKEN}"}
@@ -45,6 +46,26 @@ PAGES = [
         "fetched_at": "2026-06-10T10:00:00Z",
     },
 ]
+
+
+async def _assign_cluster(
+    container, page_id: str, *, cluster_id: str = "cluster-ml"
+) -> None:
+    now = container.clock.now()
+    await container.store.upsert_cluster(
+        Cluster(
+            id=cluster_id,
+            label="ML",
+            keywords=["clustering"],
+            size=1,
+            model_id="fake-model",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await container.store.replace_cluster_members(
+        cluster_id=ClusterId(cluster_id), members=[(page_id, 1.0)]
+    )
 
 
 @pytest.fixture
@@ -154,6 +175,106 @@ async def test_domain_query_pins_domain_pages(harness):
     top = response.json()["results"][0]
     assert top["page_id"] == ids[2]
     assert top["exact_match"] is True
+
+
+async def test_exact_url_match_respects_filters(harness):
+    client, container, ids = harness
+    await container.canonicalization.link_mentions(
+        page_id=ids[1],
+        mentions=[
+            Mention(
+                surface_form="HDBSCAN",
+                type="technology",
+                char_start=0,
+                char_end=7,
+            )
+        ],
+    )
+    await _assign_cluster(container, ids[1])
+
+    cases = [
+        {"filters": {"domain": "ml.example"}},
+        {"filters": {"after": "2026-06-02T00:00:00Z"}},
+        {"filters": {"entity": "HDBSCAN"}},
+        {"filters": {"cluster_id": "cluster-ml"}},
+    ]
+    for body in cases:
+        response = await client.post(
+            "/v1/search",
+            json={
+                "query": "https://arch.example/hexagonal",
+                "suggest": 0,
+                **body,
+            },
+            headers=AUTH,
+        )
+        assert response.status_code == 200
+        results = response.json()["results"]
+        assert all(r["page_id"] != ids[0] for r in results)
+        assert all(not r["exact_match"] for r in results)
+
+
+async def test_exact_domain_match_respects_page_id_filters(harness):
+    client, container, ids = harness
+    await _assign_cluster(container, ids[1])
+
+    response = await client.post(
+        "/v1/search",
+        json={
+            "query": "arch.example",
+            "filters": {"cluster_id": "cluster-ml"},
+            "suggest": 0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert all(r["page_id"] != ids[0] for r in results)
+    assert all(not r["exact_match"] for r in results)
+
+
+async def test_search_cluster_field_serialized(harness):
+    client, container, ids = harness
+    await _assign_cluster(container, ids[1])
+
+    exact = await client.post(
+        "/v1/search",
+        json={"query": "https://ml.example/clustering", "suggest": 0},
+        headers=AUTH,
+    )
+    exact_top = exact.json()["results"][0]
+    assert exact_top["page_id"] == ids[1]
+    assert exact_top["cluster"] == {"id": "cluster-ml", "label": "ML"}
+
+    broad = await client.post(
+        "/v1/search",
+        json={"query": "HDBSCAN clusters noise", "k": 3, "suggest": 0},
+        headers=AUTH,
+    )
+    ml_result = next(
+        result for result in broad.json()["results"] if result["page_id"] == ids[1]
+    )
+    assert ml_result["cluster"] == {"id": "cluster-ml", "label": "ML"}
+
+
+async def test_search_cluster_filter_uses_live_membership(harness):
+    client, container, ids = harness
+    await _assign_cluster(container, ids[1])
+
+    response = await client.post(
+        "/v1/search",
+        json={
+            "query": "architecture clusters zanzibar",
+            "filters": {"cluster_id": "cluster-ml"},
+            "k": 3,
+            "suggest": 0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    assert {r["page_id"] for r in response.json()["results"]} == {ids[1]}
 
 
 async def test_unknown_entity_filter_yields_empty(harness):

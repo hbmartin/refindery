@@ -186,6 +186,7 @@ class ClusterRunService:
             reducer=self._settings.reducer,
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
+            leiden_resolution=self._settings.leiden_resolution,
         )
 
     def _new_run(
@@ -204,6 +205,7 @@ class ClusterRunService:
                 "reducer": params.reducer,
                 "min_cluster_size": params.min_cluster_size,
                 "min_samples": params.min_samples,
+                "leiden_resolution": params.leiden_resolution,
                 "model_id": model_id,
             },
             started_at=started,

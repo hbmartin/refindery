@@ -63,6 +63,7 @@ class _InlineClusterEngine:
             min_dist=params.min_dist,
             min_cluster_size=params.min_cluster_size,
             min_samples=params.min_samples,
+            leiden_resolution=params.leiden_resolution,
             random_state=params.random_state,
         )
         return ClusterFitResult(
@@ -150,6 +151,7 @@ def build_test_container(
         query_log=query_log,
         clock=clock,
         reranker=reranker,
+        default_recency_half_life_days=settings.search.recency_half_life_days,
     )
     feedback = FeedbackService(query_log=query_log, clock=clock)
     forget = ForgetService(

@@ -11,13 +11,14 @@ import numpy.typing as npt
 class ClusterParams:
     """Parameters crossing the process-pool boundary (primitives only)."""
 
-    algorithm: Literal["hdbscan", "kmeans"] = "hdbscan"
+    algorithm: Literal["hdbscan", "kmeans", "leiden"] = "hdbscan"
     reducer: Literal["umap", "pca", "none"] = "umap"
     n_components: int = 10
     n_neighbors: int = 15
     min_dist: float = 0.0
     min_cluster_size: int = 5
     min_samples: int = 3
+    leiden_resolution: float = 1.0
     random_state: int = 42
 
 

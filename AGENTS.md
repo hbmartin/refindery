@@ -43,3 +43,7 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
   search settings, including defaults, so eligibility is auditable.
 - Reject blank or duplicate auth token secrets during settings validation, and
   make Compose require its token variable instead of substituting an empty value.
+- Define nDCG at non-positive cutoff depths as `0.0` when relevance labels exist,
+  before computing or dividing by ideal gain.
+- Force a non-UTC DuckDB session in naive-`TIMESTAMPTZ` regression tests so the
+  timezone boundary remains observable on UTC CI hosts.

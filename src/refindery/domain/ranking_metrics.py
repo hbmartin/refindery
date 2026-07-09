@@ -104,6 +104,8 @@ def ndcg_at_k(
     """
     if not relevant:
         return None
+    if k <= 0:
+        return 0.0
     dcg = sum(
         1.0 / math.log2(rank + 1)
         for rank, item in _ranked_items(ranked, absolute_ranks)

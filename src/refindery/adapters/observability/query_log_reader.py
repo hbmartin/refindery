@@ -60,7 +60,9 @@ class DuckDbQueryLogReader:
         self._path = path
 
     def read_runs(self, *, since: datetime | None = None) -> list[LoggedRun]:
-        """All logged runs, oldest first; optionally bounded below by ts."""
+        """All logged runs, treating a timezone-naive lower bound as UTC."""
+        if since is not None and since.tzinfo is None:
+            since = since.replace(tzinfo=UTC)
         with duckdb.connect(str(self._path), read_only=True) as conn:
             rows = conn.execute(_RUNS_SQL, [since]).fetchall()
         return [

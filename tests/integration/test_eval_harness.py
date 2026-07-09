@@ -2,11 +2,15 @@
 
 import asyncio
 import time
+from datetime import datetime
 from pathlib import Path
 
+import duckdb
 import httpx
 import pytest
 
+from refindery.adapters.observability import query_log_reader as reader_module
+from refindery.adapters.observability.query_log import QUERY_LOG_DDL
 from refindery.adapters.observability.query_log_reader import DuckDbQueryLogReader
 from refindery.api.app import create_app
 from refindery.application.services.eval_service import ArmSpec, EvalService
@@ -163,3 +167,34 @@ async def test_latest_feedback_label_wins(harness, tmp_path):
 def test_reader_requires_existing_file(tmp_path):
     with pytest.raises(FileNotFoundError, match="query log not found"):
         DuckDbQueryLogReader(tmp_path / "missing.duckdb")
+
+
+def test_reader_treats_naive_since_as_utc(tmp_path, monkeypatch):
+    db_path = tmp_path / "naive-since.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(QUERY_LOG_DDL)
+        conn.execute(
+            """
+            INSERT INTO query_log (
+              query_id, ts, kind, query_text, params, active_model, timing_ms
+            ) VALUES (
+              'query-1', TIMESTAMPTZ '2026-07-01 04:00:00+00',
+              'search', 'query', '{}', 'model', '{}'
+            )
+            """
+        )
+
+    original_connect = duckdb.connect
+
+    def connect_with_non_utc_timezone(
+        database: str, *, read_only: bool = False
+    ) -> duckdb.DuckDBPyConnection:
+        conn = original_connect(database, read_only=read_only)
+        conn.execute("SET TimeZone = 'America/Los_Angeles'")
+        return conn
+
+    monkeypatch.setattr(reader_module.duckdb, "connect", connect_with_non_utc_timezone)
+
+    reader = DuckDbQueryLogReader(db_path)
+    since = datetime(2026, 7, 1)  # noqa: DTZ001 — intentionally timezone-naive
+    assert [run.query_id for run in reader.read_runs(since=since)] == ["query-1"]

@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from refindery.api.auth import require_write
 from refindery.api.deps import get_container
 from refindery.api.schemas import (
     BlacklistEntry,
@@ -30,6 +31,7 @@ def _entry(rule: BlacklistRule) -> BlacklistEntry:
 @router.post(
     "/forget",
     operation_id="forget",
+    dependencies=[Depends(require_write)],
     summary="Purge and blacklist a URL or domain",
     description=(
         "Permanently remove matching pages from the index and blacklist the "
@@ -71,6 +73,7 @@ async def list_blacklist(
 @router.delete(
     "/blacklist/{blacklist_id}",
     operation_id="unblacklist",
+    dependencies=[Depends(require_write)],
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Remove a blacklist rule",
     description="Future ingests are allowed again; purged content stays purged.",

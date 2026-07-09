@@ -50,6 +50,9 @@ dependencies = [
     "uvicorn>=0.51.0",
 ]
 
+[project.scripts]
+refindery = "refindery.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/hbmartin/refindery"
 Repository = "https://github.com/hbmartin/refindery"
@@ -118,6 +121,11 @@ addopts = "-m 'not external'"
 
 [tool.coverage.run]
 source = ["src/refindery"]
+
+[tool.coverage.report]
+# Floor set just below measured coverage (85% local with qdrant tests
+# skipped) to stop silent rot; applies to any full --cov run, local or CI.
+fail_under = 84
 
 [tool.pyrefly]
 search-path = ["src", "."]

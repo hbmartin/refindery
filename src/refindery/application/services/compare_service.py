@@ -77,14 +77,13 @@ class CompareOutcome:
 
 @dataclass(frozen=True, slots=True)
 class _ArmTrace:
-    """Data needed to write one compare-arm query-log row."""
+    """One executed arm: everything a compare-arm log row needs."""
 
     model_id: str
     query: str
     k: int
     candidates: int
     rerank: bool
-    compare_id: str
     dense: list[ChunkHit]
     sparse: list[ChunkHit]
     fused: list[ChunkHit]
@@ -136,17 +135,17 @@ class CompareService:
         arms: list[CompareArm] = []
         ranked_ids: dict[str, list[str]] = {}
         for model in models:
-            arm = await self._run_arm(
+            trace = await self._execute_arm(
                 model_id=model.id,
                 query=query,
                 sparse=sparse,
                 k=k,
                 candidates=candidates,
                 rerank=rerank,
-                compare_id=compare_id,
             )
-            arms.append(arm)
-            ranked_ids[model.id] = [str(page.id) for page, _ in arm.pages]
+            self._log_arm(trace, compare_id=compare_id)
+            arms.append(CompareArm(model_id=model.id, pages=trace.ranked))
+            ranked_ids[model.id] = [str(page.id) for page, _ in trace.ranked]
 
         agreement = [
             PairAgreement(
@@ -162,7 +161,37 @@ class CompareService:
         ]
         return CompareOutcome(compare_id=compare_id, arms=arms, agreement=agreement)
 
-    async def _run_arm(
+    async def replay_arm(
+        self,
+        *,
+        model_id: str,
+        query: str,
+        k: int = 10,
+        candidates: int = 100,
+        rerank: bool = True,
+    ) -> list[PageId]:
+        """Run one arm without logging.
+
+        Offline eval replays queries read from the query log; logging the
+        replays would pollute the very substrate being scored.
+        """
+        model = await self._store.get_model(model_id)
+        if model is None:
+            raise ModelNotFoundError(model_id)
+        if model.status is not ModelStatus.READY:
+            raise ModelNotComparableError(model_id, model.status)
+        sparse = await self._vector_store.sparse_query(text=query, limit=candidates)
+        trace = await self._execute_arm(
+            model_id=model_id,
+            query=query,
+            sparse=sparse,
+            k=k,
+            candidates=candidates,
+            rerank=rerank,
+        )
+        return [page.id for page, _ in trace.ranked]
+
+    async def _execute_arm(
         self,
         *,
         model_id: str,
@@ -171,8 +200,7 @@ class CompareService:
         k: int,
         candidates: int,
         rerank: bool,
-        compare_id: str,
-    ) -> CompareArm:
+    ) -> _ArmTrace:
         model = await self._registry.require_model(model_id)
         embedder = self._registry.embedder_for(model)
         vector = await embedder.embed_query(query)
@@ -184,21 +212,17 @@ class CompareService:
             query=query, fused=fused, enabled=rerank
         )
         ranked = await self._rank_pages(fused=fused, rerank_by_id=rerank_by_id, k=k)
-        self._log_arm(
-            _ArmTrace(
-                model_id=model_id,
-                query=query,
-                k=k,
-                candidates=candidates,
-                rerank=rerank,
-                compare_id=compare_id,
-                dense=dense,
-                sparse=sparse,
-                fused=fused,
-                ranked=ranked,
-            )
+        return _ArmTrace(
+            model_id=model_id,
+            query=query,
+            k=k,
+            candidates=candidates,
+            rerank=rerank,
+            dense=dense,
+            sparse=sparse,
+            fused=fused,
+            ranked=ranked,
         )
-        return CompareArm(model_id=model_id, pages=ranked)
 
     async def _rerank_scores(
         self, *, query: str, fused: list[ChunkHit], enabled: bool
@@ -235,13 +259,13 @@ class CompareService:
         )
         return [(by_id[p.page_id], p.score) for p in page_scores if p.page_id in by_id]
 
-    def _log_arm(self, trace: _ArmTrace) -> None:
+    def _log_arm(self, trace: _ArmTrace, *, compare_id: str) -> None:
         self._query_log.log_query(
             QueryLogRecord(
                 query_id=new_query_id(),
                 ts=self._clock.now(),
                 kind="compare_arm",
-                compare_id=trace.compare_id,
+                compare_id=compare_id,
                 query_text=trace.query,
                 params={
                     "k": trace.k,

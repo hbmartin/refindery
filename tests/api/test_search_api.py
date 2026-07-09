@@ -102,7 +102,14 @@ async def test_search_response_shape_matches_spec(harness):
     assert response.status_code == 200
     data = response.json()
 
-    assert set(data) == {"query_id", "results", "suggestions", "timing_ms"}
+    assert set(data) == {
+        "query_id",
+        "results",
+        "offset",
+        "has_more",
+        "suggestions",
+        "timing_ms",
+    }
     assert data["results"], "expected at least one result"
     top = data["results"][0]
     for key in (
@@ -339,6 +346,80 @@ async def test_similar_unknown_page_404(harness):
     client, _container, _ids = harness
     response = await client.get("/v1/pages/nope/similar", headers=AUTH)
     assert response.status_code == 404
+
+
+async def test_pagination_pages_are_disjoint_and_complete(harness):
+    client, _container, _ids = harness
+    body = {"query": "architecture clustering zanzibar", "suggest": 0}
+    full = await client.post("/v1/search", json={**body, "k": 4}, headers=AUTH)
+    all_ids = [r["page_id"] for r in full.json()["results"]]
+    assert len(all_ids) == 3  # the whole corpus matches something
+
+    first = await client.post(
+        "/v1/search", json={**body, "k": 2, "offset": 0}, headers=AUTH
+    )
+    second = await client.post(
+        "/v1/search", json={**body, "k": 2, "offset": 2}, headers=AUTH
+    )
+    first_ids = [r["page_id"] for r in first.json()["results"]]
+    second_ids = [r["page_id"] for r in second.json()["results"]]
+    assert first_ids + second_ids == all_ids
+    assert first.json()["offset"] == 0
+    assert first.json()["has_more"] is True
+    assert second.json()["has_more"] is False
+
+
+async def test_pagination_past_the_end_is_empty(harness):
+    client, _container, _ids = harness
+    response = await client.post(
+        "/v1/search",
+        json={"query": "zanzibar", "k": 10, "offset": 50, "candidates": 100},
+        headers=AUTH,
+    )
+    assert response.status_code == 200
+    assert response.json()["results"] == []
+    assert response.json()["has_more"] is False
+
+
+async def test_pagination_requires_candidates_to_cover_offset(harness):
+    client, _container, _ids = harness
+    response = await client.post(
+        "/v1/search",
+        json={"query": "zanzibar", "k": 50, "offset": 60, "candidates": 100},
+        headers=AUTH,
+    )
+    assert response.status_code == 422
+    assert "offset + k" in response.text
+
+
+async def test_pagination_offset_lands_in_query_log(harness, tmp_path):
+    client, _container, _ids = harness
+    response = await client.post(
+        "/v1/search", json={"query": "zanzibar", "k": 5, "offset": 1}, headers=AUTH
+    )
+    query_id = response.json()["query_id"]
+
+    deadline = time.monotonic() + 10
+    rows = []
+    while time.monotonic() < deadline:
+        conn = duckdb.connect(str(tmp_path / "obs.duckdb"))
+        try:
+            rows = conn.execute(
+                "SELECT params ->> 'offset', final_pages[1].rank FROM query_log "
+                "WHERE query_id = ?",
+                [query_id],
+            ).fetchall()
+        finally:
+            conn.close()
+        if rows:
+            break
+        await asyncio.sleep(0.2)
+
+    assert rows, "query row never landed in the log"
+    offset, first_rank = rows[0]
+    assert offset == "1"
+    # ranks are absolute: the first logged page of an offset=1 slice is rank 2
+    assert first_rank == 2
 
 
 async def test_query_log_lands_in_duckdb(harness, tmp_path):

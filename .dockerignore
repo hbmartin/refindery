@@ -1,0 +1,14 @@
+.git
+.venv
+.env
+data/
+htmlcov/
+dist/
+docs/
+tests/
+reviews_triage/
+*.duckdb
+*.db
+.pytest_cache
+.ruff_cache
+__pycache__

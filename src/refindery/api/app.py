@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI
 
 from refindery.adapters.observability.logging import configure_logging
 from refindery.adapters.observability.otel import configure_tracing
-from refindery.api.auth import require_bearer
+from refindery.api.auth import TokenRegistry, require_read
 from refindery.api.mcp import mount_mcp
 from refindery.api.routes import (
     clusters,
@@ -49,9 +49,9 @@ def create_app(settings: Settings, *, container: Container | None = None) -> Fas
         lifespan=lifespan,
     )
     app.state.container = wired
-    app.state.auth_token = settings.auth_token.get_secret_value()
+    app.state.token_registry = TokenRegistry.from_settings(settings)
 
-    authed = [Depends(require_bearer)]
+    authed = [Depends(require_read)]
     app.include_router(pages.router, dependencies=authed)
     app.include_router(jobs.router, dependencies=authed)
     app.include_router(search.router, dependencies=authed)

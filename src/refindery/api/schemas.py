@@ -150,6 +150,7 @@ class SearchRequest(BaseModel):
 
     query: str = Field(min_length=1, max_length=4_000)
     k: int = Field(default=10, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
     candidates: int = Field(default=100, ge=1, le=1_000)
     rerank: bool = True
     chunks_per_page: int = Field(default=2, ge=0, le=10)
@@ -163,8 +164,10 @@ class SearchRequest(BaseModel):
 
     @model_validator(mode="after")
     def _candidates_cover_k(self) -> Self:
-        if self.candidates < self.k:
-            msg = "candidates must be >= k"
+        # The candidate pool is the only ranking that exists past the final
+        # slice, so it must be deep enough to cover the requested page.
+        if self.candidates < self.offset + self.k:
+            msg = "candidates must be >= offset + k"
             raise ValueError(msg)
         return self
 
@@ -213,6 +216,8 @@ class SearchResponse(BaseModel):
 
     query_id: str
     results: list[PageResult]
+    offset: int
+    has_more: bool
     suggestions: list[Suggestion]
     timing_ms: dict[str, float]
 

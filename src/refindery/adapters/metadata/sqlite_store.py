@@ -655,7 +655,10 @@ class _EntityClusterMixin:
     async def clusters_for_pages(self, page_ids: list[PageId]) -> dict[PageId, Cluster]:
         """Live cluster per page id; pages without one are absent."""
         clusters: dict[PageId, Cluster] = {}
-        for batch in batched(page_ids, n=_SQLITE_VARIABLE_BATCH_SIZE, strict=False):
+        unique_page_ids = list(dict.fromkeys(page_ids))
+        for batch in batched(
+            unique_page_ids, n=_SQLITE_VARIABLE_BATCH_SIZE, strict=False
+        ):
             placeholders = ",".join("?" for _ in batch)
             cursor = await self.conn.execute(
                 "SELECT m.page_id AS member_page_id, c.* FROM cluster_members m "  # noqa: S608

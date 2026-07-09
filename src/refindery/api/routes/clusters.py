@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from refindery.api.auth import require_write
 from refindery.api.deps import get_container
 from refindery.api.schemas import (
     ClusterDetailResponse,
@@ -89,6 +90,7 @@ async def cluster_pages(
 @router.post(
     "/recompute",
     operation_id="recompute_clusters",
+    dependencies=[Depends(require_write)],
     status_code=status.HTTP_202_ACCEPTED,
     summary="Trigger a cluster run",
 )

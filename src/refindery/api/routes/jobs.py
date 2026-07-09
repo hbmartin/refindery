@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from refindery.api.auth import require_write
 from refindery.api.deps import get_container
 from refindery.api.schemas import JobListResponse, JobResponse
 from refindery.application.container import Container
@@ -38,7 +39,12 @@ async def list_jobs(
     return JobListResponse(jobs=[_to_response(job) for job in jobs])
 
 
-@router.post("/{job_id}/retry", operation_id="retry_job", summary="Retry a dead job")
+@router.post(
+    "/{job_id}/retry",
+    operation_id="retry_job",
+    dependencies=[Depends(require_write)],
+    summary="Retry a dead job",
+)
 async def retry_job(
     job_id: str,
     container: Annotated[Container, Depends(get_container)],

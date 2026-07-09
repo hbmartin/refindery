@@ -1,4 +1,23 @@
 services:
+  # The app image is optional: `docker compose up -d qdrant` alone keeps the
+  # host-python Docker profile working. `docker compose up -d` builds and
+  # runs the whole stack; set REFINDERY_AUTH_TOKEN and provider keys first.
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # startup fails with a clear ValidationError when no token is set
+      REFINDERY_AUTH_TOKEN: ${REFINDERY_AUTH_TOKEN:-}
+      REFINDERY_QDRANT__URL: http://qdrant:6333
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      COHERE_API_KEY: ${COHERE_API_KEY:-}
+    volumes:
+      - refindery_data:/data
+      - refindery_models:/models
+    depends_on:
+      - qdrant
+
   qdrant:
     image: qdrant/qdrant:v1.18.2
     ports:
@@ -16,5 +35,7 @@ services:
   #     - ollama_models:/root/.ollama
 
 volumes:
+  refindery_data:
+  refindery_models:
   qdrant_storage:
   # ollama_models:

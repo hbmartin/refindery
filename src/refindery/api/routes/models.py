@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from refindery.api.auth import require_write
 from refindery.api.deps import get_container
 from refindery.api.schemas import (
     BackfillEstimateResponse,
@@ -44,6 +45,7 @@ async def list_models(
 @router.post(
     "",
     operation_id="register_model",
+    dependencies=[Depends(require_write)],
     status_code=status.HTTP_201_CREATED,
     summary="Register an embedding model",
 )
@@ -79,6 +81,7 @@ async def register_model(
 @router.post(
     "/{model_id}/backfill",
     operation_id="backfill_model",
+    dependencies=[Depends(require_write)],
     summary="Estimate or start a backfill",
     description=(
         "confirm=false returns an exact dry-run estimate (chunk token counts "
@@ -113,6 +116,7 @@ async def backfill_model(
 @router.post(
     "/{model_id}/activate",
     operation_id="activate_model",
+    dependencies=[Depends(require_write)],
     summary="Make this the active search model",
 )
 async def activate_model(
@@ -139,6 +143,7 @@ async def activate_model(
 @router.delete(
     "/{model_id}",
     operation_id="retire_model",
+    dependencies=[Depends(require_write)],
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Retire a model and drop its vector space",
 )

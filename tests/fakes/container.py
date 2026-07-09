@@ -34,8 +34,10 @@ from refindery.config import (
     HueySettings,
     JobsSettings,
     LanceDbSettings,
+    Scope,
     Settings,
     SqliteSettings,
+    TokenSpec,
     VectorStoreKind,
 )
 from refindery.domain.models import EmbeddingModel, JobKind
@@ -46,6 +48,7 @@ from tests.fakes.reranker import FakeReranker
 from tests.fakes.surface_embedder import FakeSurfaceEmbedder
 
 TEST_TOKEN = "test-token"  # noqa: S105 — test fixture
+TEST_READ_TOKEN = "test-read-token"  # noqa: S105 — test fixture
 
 
 class _InlineClusterEngine:
@@ -78,6 +81,13 @@ def make_test_settings(tmp_path: Path) -> Settings:
     """Build settings pointing every path at tmp_path with a fake embedder."""
     return Settings(
         auth_token=TEST_TOKEN,  # type: ignore[arg-type]
+        auth_tokens=(
+            TokenSpec(
+                name="readonly",
+                token=TEST_READ_TOKEN,  # type: ignore[arg-type]
+                scopes=(Scope.READ,),
+            ),
+        ),
         vector_store=VectorStoreKind.LANCEDB,
         lancedb=LanceDbSettings(path=tmp_path / "lance"),
         sqlite=SqliteSettings(path=tmp_path / "meta.db"),

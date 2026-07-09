@@ -265,7 +265,7 @@ async def test_cluster_members_return_named_rows(store):
     ]
 
 
-async def test_clusters_for_pages_batches_legacy_sqlite_variable_limit(
+async def test_clusters_for_pages_deduplicates_and_batches_legacy_sqlite_limit(
     store: SqliteMetadataStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     page_ids = [PageId(f"page-{index}") for index in range(1_001)]
@@ -305,7 +305,7 @@ async def test_clusters_for_pages_batches_legacy_sqlite_variable_limit(
 
     monkeypatch.setattr(store.conn, "execute", execute_with_legacy_limit)
 
-    clusters = await store.clusters_for_pages(page_ids)
+    clusters = await store.clusters_for_pages([*page_ids, *page_ids])
 
     assert parameter_counts == [999, 2]
     assert clusters == {page.id: cluster for page in member_pages}

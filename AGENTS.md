@@ -23,9 +23,10 @@ Always run ruff and pytest and ty and pyrefly and lizard (with uv) after making 
 - Inputs (e.g. HTTP requests) and call results (e.g. HTTP requests not already wrapped in a library) must be validated and made type safe with pydantic.
 
 # Update AGENTS.md
-Update AGENTS.md with notes, learnings, findings, or other useful patters you have learned
+Update AGENTS.md with notes, learnings, findings, or other useful patterns you have learned
 
 # Notes
 
-- Batch dynamic SQLite `IN` query parameters to at most 999 variables so the
-  code remains compatible with older SQLite builds.
+- Deduplicate identifiers while preserving order before batching dynamic SQLite
+  `IN` query parameters to at most 999 variables. This avoids redundant queries
+  and remains compatible with older SQLite builds.

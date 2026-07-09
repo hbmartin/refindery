@@ -35,7 +35,9 @@ runs in a process pool.
 
 Observability: OpenTelemetry traces (off by default), structured JSON logs,
 Prometheus `/metrics`, and a DuckDB append-only query log — the substrate for
-offline retrieval evals.
+offline retrieval evals: `refindery eval score` computes nDCG/MRR/recall from
+logged queries + `/v1/feedback` labels, and `refindery eval replay` diffs two
+configurations (models or rerank on/off) over the same golden set.
 
 ## Quickstart
 
@@ -56,6 +58,19 @@ uv sync --extra ner
 docker compose up -d qdrant
 export REFINDERY_AUTH_TOKEN="$(openssl rand -hex 24)"
 python -m refindery
+```
+
+### Fully containerized
+
+The multi-stage `Dockerfile` builds a slim image with the `ner` extra
+(no torch/gliner; add extras to the sync lines if you need them). Data
+lives on the `refindery_data` volume, model caches on `refindery_models`.
+
+```bash
+export REFINDERY_AUTH_TOKEN="$(openssl rand -hex 24)"
+export VOYAGE_API_KEY=...
+docker compose up -d --build
+curl -s http://127.0.0.1:8000/healthz
 ```
 
 ### Ingest and search
@@ -85,7 +100,25 @@ claude mcp add --transport http refindery http://127.0.0.1:8000/mcp \
 
 Read-only tools are exposed by default (`search`, `get_page`, `similar_to`,
 `list_clusters`, …). Mutating tools (`add_page`, `forget`) are opt-in via
-`REFINDERY_MCP__ENABLE_MUTATING_TOOLS=true`.
+`REFINDERY_MCP__ENABLE_MUTATING_TOOLS=true`. That flag controls visibility
+only — authorization comes from the token's scopes on every transport.
+
+### Auth tokens and scopes
+
+`REFINDERY_AUTH_TOKEN` is a single full-access token. To hand each capture
+source or agent its own revocable token, configure named tokens with `read`
+or `write` scopes (write implies read; both forms can coexist):
+
+```bash
+export REFINDERY_AUTH_TOKENS='[
+  {"name": "chrome-capture", "token": "...", "scopes": ["write"]},
+  {"name": "agent",          "token": "...", "scopes": ["read"]}
+]'
+```
+
+Read-scoped tokens can search, browse, compare, and record feedback;
+mutating endpoints (`add_page`, `forget`, model management, …) return 403
+without the `write` scope.
 
 ## HTTP API
 
@@ -128,7 +161,9 @@ Entity extraction is required at startup. The default extractor chain needs
 the `ner` extra unless you configure a healthy gazetteer, GLiNER, or LLM
 extractor.
 
-See [Operations](docs/operations.md) for alpha reset commands, query-log
+See [Architecture](docs/architecture.md) for the ports/adapters map, the
+ingest→index→cluster data flow, and the search pipeline. See
+[Operations](docs/operations.md) for alpha reset commands, query-log
 purging, job lease behavior, vector-store caveats, and accepted risks.
 
 ## Development

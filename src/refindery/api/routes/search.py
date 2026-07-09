@@ -84,6 +84,7 @@ async def search(
                 SearchQuery(
                     query=request.query,
                     k=request.k,
+                    offset=request.offset,
                     candidates=request.candidates,
                     rerank=request.rerank,
                     chunks_per_page=request.chunks_per_page,
@@ -122,6 +123,8 @@ async def search(
     return SearchResponse(
         query_id=outcome.query_id,
         results=[_page_result(r) for r in outcome.results],
+        offset=request.offset,
+        has_more=outcome.has_more,
         suggestions=[
             Suggestion(page_id=s.page_id, title=titles.get(s.page_id), reason=s.reason)
             for s in outcome.suggestions

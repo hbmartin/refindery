@@ -84,6 +84,7 @@ class SearchQuery:
 
     query: str
     k: int = 10
+    offset: int = 0
     candidates: int = 100
     rerank: bool = True
     chunks_per_page: int = 2
@@ -123,6 +124,7 @@ class SearchOutcome:
     results: list[SearchResultPage]
     suggestions: list[SimilarPage]
     timing_ms: dict[str, float] = field(default_factory=dict)
+    has_more: bool = False
 
 
 class SearchService:
@@ -200,13 +202,18 @@ class SearchService:
             timer=timer,
         )
 
-        suggestions = await self._suggestions(request, hydrated)
+        # Pagination happens here and only here: RRF fusion, reranking,
+        # rollup, and exact-match pinning all reorder upstream, so a store-
+        # level offset would slice the wrong ranking.
+        page_results = hydrated[request.offset : request.offset + request.k]
+        suggestions = await self._suggestions(request, page_results)
 
         outcome = SearchOutcome(
             query_id=query_id,
-            results=hydrated[: request.k],
+            results=page_results,
             suggestions=suggestions,
             timing_ms={**timer.timings_ms, "total": timer.total_ms()},
+            has_more=len(hydrated) > request.offset + request.k,
         )
         self._log(
             request,
@@ -420,7 +427,7 @@ class SearchService:
     ) -> list[SimilarPage]:
         if request.suggest <= 0 or not results:
             return []
-        exclude = frozenset(r.page.id for r in results[: request.k])
+        exclude = frozenset(r.page.id for r in results)
         try:
             return await self._similarity.similar(
                 page_id=results[0].page.id,
@@ -457,6 +464,7 @@ class SearchService:
             query_text=request.query,
             params={
                 "k": request.k,
+                "offset": request.offset,
                 "candidates": request.candidates,
                 "rerank": request.rerank,
                 "rollup": request.rollup,
@@ -473,9 +481,11 @@ class SearchService:
             candidate_set=logged(fused),
             dense_hits=logged(dense),
             sparse_hits=logged(sparse),
+            # Only the returned slice is logged; ranks are absolute so
+            # offline eval joins stay truthful under pagination.
             final_pages=tuple(
                 LoggedPage(page_id=r.page.id, score=r.score, rank=rank)
-                for rank, r in enumerate(outcome.results, start=1)
+                for rank, r in enumerate(outcome.results, start=request.offset + 1)
             ),
             timing_ms=outcome.timing_ms,
         )

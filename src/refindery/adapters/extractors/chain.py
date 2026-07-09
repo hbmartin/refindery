@@ -1,6 +1,7 @@
 """Chain extractor: first healthy adapter wins, per-call fall-through."""
 
 import logging
+from inspect import isawaitable
 
 from refindery.application.ports.entity_extractor import EntityExtractor
 from refindery.domain.models import Mention
@@ -32,3 +33,16 @@ class ChainExtractor:
                     exc_info=True,
                 )
         return []
+
+    async def aclose(self) -> None:
+        """Close links that expose close/aclose hooks."""
+        for extractor in self._extractors:
+            aclose = getattr(extractor, "aclose", None)
+            if callable(aclose):
+                result = aclose()
+                if isawaitable(result):
+                    await result
+                continue
+            close = getattr(extractor, "close", None)
+            if callable(close):
+                close()

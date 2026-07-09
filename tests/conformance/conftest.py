@@ -35,6 +35,16 @@ MODEL_B = EmbeddingModel(
     status=ModelStatus.READY,
     created_at=datetime(2026, 1, 2, tzinfo=UTC),
 )
+MODEL_SLASH = EmbeddingModel(
+    id="sentence-transformers/all-MiniLM-L6-v2",
+    provider="fake",
+    model_name="sentence-transformers/all-MiniLM-L6-v2",
+    dim=DIM,
+    max_input_tokens=32_000,
+    is_active=False,
+    status=ModelStatus.READY,
+    created_at=datetime(2026, 1, 3, tzinfo=UTC),
+)
 
 
 def _qdrant_url() -> str | None:

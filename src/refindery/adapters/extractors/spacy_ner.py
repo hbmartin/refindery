@@ -10,13 +10,14 @@ pool and release the GIL).
 
 import asyncio
 import logging
+from typing import Any
 
 from refindery.domain.entities import EntityType
 from refindery.domain.models import Mention
 
 logger = logging.getLogger(__name__)
 
-_LABEL_MAP = {
+_LABEL_MAP: dict[str, EntityType] = {
     "PERSON": EntityType.PERSON,
     "ORG": EntityType.ORG,
     "GPE": EntityType.PLACE,
@@ -36,7 +37,7 @@ class SpacyExtractor:
     """EntityExtractor over en_core_web_sm."""
 
     def __init__(self, model: str = "en_core_web_sm") -> None:
-        self._nlp = None
+        self._nlp: Any | None = None
         try:
             import spacy  # noqa: PLC0415 — optional extra
 

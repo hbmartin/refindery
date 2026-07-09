@@ -4,6 +4,7 @@ Grows in later milestones (entities, clusters, tombstones). Implementations
 must keep all SQL dialect-neutral outside the adapter.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -17,6 +18,7 @@ from refindery.domain.models import (
     ClusterRun,
     EmbeddingModel,
     Job,
+    JobKind,
     JobStatus,
     Mention,
     ModelBackfill,
@@ -26,6 +28,30 @@ from refindery.domain.models import (
     TombstoneStatus,
     VectorTombstone,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class PageVectorRow:
+    """Stored pooled page vector for a single model."""
+
+    page_id: PageId
+    vector: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterMemberRow:
+    """One cluster membership row."""
+
+    page_id: PageId
+    probability: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkStats:
+    """Corpus-level chunk count and token total."""
+
+    n_chunks: int
+    total_tokens: int
 
 
 class MetadataStore(Protocol):
@@ -108,8 +134,12 @@ class MetadataStore(Protocol):
         """Store the pooled page vector (float32 bytes) for one model."""
         ...
 
-    async def get_page_vectors(self, *, model_id: str) -> list[tuple[PageId, bytes]]:
+    async def get_page_vectors(self, *, model_id: str) -> list[PageVectorRow]:
         """All page vectors for one model (clustering / similarity)."""
+        ...
+
+    async def clear_index_artifacts(self, page_id: PageId) -> None:
+        """Remove chunks and page vectors for a page after a core index failure."""
         ...
 
     # -- embedding models ---------------------------------------------------
@@ -154,6 +184,12 @@ class MetadataStore(Protocol):
         self, *, status: JobStatus | None = None, limit: int = 100
     ) -> list[Job]:
         """List jobs, newest first."""
+        ...
+
+    async def latest_job_for_page(
+        self, *, page_id: PageId, kind: JobKind | None = None
+    ) -> Job | None:
+        """Newest job row for a page payload, optionally restricted by kind."""
         ...
 
     async def mark_job_running(
@@ -347,9 +383,7 @@ class MetadataStore(Protocol):
         """Live clusters (optionally tombstoned too), largest first."""
         ...
 
-    async def cluster_members(
-        self, cluster_id: ClusterId
-    ) -> list[tuple[PageId, float | None]]:
+    async def cluster_members(self, cluster_id: ClusterId) -> list[ClusterMemberRow]:
         """Members with soft-membership probability."""
         ...
 
@@ -397,7 +431,7 @@ class MetadataStore(Protocol):
 
     # -- backfills (M5) -------------------------------------------------------------
 
-    async def chunk_stats(self) -> tuple[int, int]:
+    async def chunk_stats(self) -> ChunkStats:
         """(n_chunks, total_tokens) over the whole corpus — exact estimate."""
         ...
 

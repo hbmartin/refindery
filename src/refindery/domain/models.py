@@ -46,6 +46,7 @@ class JobKind(StrEnum):
 
     INDEX_PAGE = "index_page"
     FETCH_AND_INDEX = "fetch_and_index"
+    EXTRACT_ENTITIES = "extract_entities"
     BACKFILL_MODEL = "backfill_model"
     CLUSTER = "cluster"
     LABEL_CLUSTERS = "label_clusters"

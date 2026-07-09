@@ -25,3 +25,14 @@ class ExtractionRouter:
         if (extractor := self._by_type.get(content_type)) is None:
             raise UnsupportedContentTypeError(content_type)
         return await extractor.extract(raw=raw, charset=charset)
+
+    def close(self) -> None:
+        """Close extractor resources that expose a close method."""
+        seen: set[int] = set()
+        for extractor in self._by_type.values():
+            if id(extractor) in seen:
+                continue
+            seen.add(id(extractor))
+            close = getattr(extractor, "close", None)
+            if callable(close):
+                close()

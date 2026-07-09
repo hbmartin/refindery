@@ -42,7 +42,7 @@ offline retrieval evals.
 ### Minimal profile (no Docker)
 
 ```bash
-uv sync
+uv sync --extra ner
 export REFINDERY_AUTH_TOKEN="$(openssl rand -hex 24)"
 export REFINDERY_VECTOR_STORE=lancedb
 export VOYAGE_API_KEY=...           # or configure another embedding provider
@@ -52,6 +52,7 @@ python -m refindery
 ### Docker profile (Qdrant, the default store)
 
 ```bash
+uv sync --extra ner
 docker compose up -d qdrant
 export REFINDERY_AUTH_TOKEN="$(openssl rand -hex 24)"
 python -m refindery
@@ -123,7 +124,14 @@ Bearer token is always required, even on loopback. The server binds to
 | `ner`       | spaCy NER model                                | en_core_web_sm      |
 | `leiden`    | Leiden clustering                              | igraph, leidenalg   |
 
+Entity extraction is required at startup. The default extractor chain needs
+the `ner` extra unless you configure a healthy gazetteer, GLiNER, or LLM
+extractor.
+
+See [Operations](docs/operations.md) for alpha reset commands, query-log
+purging, job lease behavior, vector-store caveats, and accepted risks.
+
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). TL;DR: `uv sync --all-groups`, then
-`uv run ruff check . && uv run pytest && uv run ty check src tests && uv run pyrefly check src tests`.
+See [CONTRIBUTING.md](CONTRIBUTING.md). TL;DR: `uv sync --all-groups --extra ner`,
+then `uv run ruff format . && uv run ruff check . && uv run pytest && uv run ty check && uv run pyrefly check`.

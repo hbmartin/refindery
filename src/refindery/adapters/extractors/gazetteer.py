@@ -11,10 +11,17 @@ import logging
 import re
 from pathlib import Path
 
+from pydantic import BaseModel, Field, ValidationError
+
 from refindery.domain.entities import EntityType
 from refindery.domain.models import Mention
 
 logger = logging.getLogger(__name__)
+
+
+class _GazetteerRow(BaseModel):
+    label: EntityType
+    pattern: str = Field(min_length=1)
 
 
 class GazetteerExtractor:
@@ -28,14 +35,12 @@ class GazetteerExtractor:
             if not line.strip():
                 continue
             try:
-                row = json.loads(line)
-                entity_type = EntityType(row["label"])
-                pattern = str(row["pattern"])
-            except (json.JSONDecodeError, KeyError, ValueError):
+                row = _GazetteerRow.model_validate(json.loads(line))
+            except (json.JSONDecodeError, ValidationError):
                 logger.warning("skipping bad gazetteer line: %s", line[:80])
                 continue
-            compiled = re.compile(rf"\b{re.escape(pattern)}\b", flags=re.IGNORECASE)
-            self._patterns.append((compiled, pattern, entity_type))
+            compiled = re.compile(rf"\b{re.escape(row.pattern)}\b", flags=re.IGNORECASE)
+            self._patterns.append((compiled, row.pattern, row.label))
 
     def health_check(self) -> bool:
         """Healthy when any patterns loaded."""

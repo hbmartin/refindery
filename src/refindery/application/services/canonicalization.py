@@ -39,7 +39,7 @@ class CanonicalizationService:
         self,
         *,
         store: MetadataStore,
-        surface_embedder: SurfaceFormEmbedder,
+        surface_embedder: SurfaceFormEmbedder | None,
         clock: Clock,
         cosine_threshold: float = 0.85,
         edit_threshold: float = 0.15,
@@ -117,7 +117,7 @@ class CanonicalizationService:
             if normalized_edit_distance(normalized, candidate_norm) <= self._edit:
                 return candidate
             survivors.append((candidate, candidate_norm))
-        if not survivors:
+        if not survivors or self._embedder is None:
             return None
         forms = [normalized, *[norm for _, norm in survivors]]
         vectors = await asyncio.to_thread(self._embedder.embed, forms)
@@ -155,7 +155,11 @@ class CanonicalizationService:
 
     async def _merge_block(self, entities: list[Entity]) -> int:
         norms = [normalize_surface_form(e.canonical_form) for e in entities]
-        vectors = await asyncio.to_thread(self._embedder.embed, norms)
+        vectors = (
+            None
+            if self._embedder is None
+            else await asyncio.to_thread(self._embedder.embed, norms)
+        )
 
         # Threshold graph -> connected components (single linkage).
         parent = list(range(len(entities)))
@@ -170,8 +174,10 @@ class CanonicalizationService:
         for i in range(len(entities)):
             for j in range(i + 1, len(entities)):
                 edit = normalized_edit_distance(norms[i], norms[j])
-                cosine = float(np.dot(vectors[i], vectors[j]))
-                distance = min(edit, 1.0 - cosine)
+                cosine = (
+                    None if vectors is None else float(np.dot(vectors[i], vectors[j]))
+                )
+                distance = edit if cosine is None else min(edit, 1.0 - cosine)
                 if distance <= self._edit:
                     similarities[(i, j)] = 1.0 - distance
                     parent[find(i)] = find(j)

@@ -6,6 +6,7 @@ import pytest
 
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.domain.ids import (
+    ClusterId,
     JobId,
     PageId,
     new_chunk_id,
@@ -14,6 +15,7 @@ from refindery.domain.ids import (
 )
 from refindery.domain.models import (
     Chunk,
+    Cluster,
     EmbeddingModel,
     Job,
     JobKind,
@@ -153,7 +155,10 @@ async def test_page_vectors_upsert(store):
         page_id=page.id, model_id="voyage-3.5", vector=b"\x02\x03"
     )
     vectors = await store.get_page_vectors(model_id="voyage-3.5")
-    assert vectors == [(page.id, b"\x02\x03")]
+    assert [(row.page_id, row.vector) for row in vectors] == [(page.id, b"\x02\x03")]
+    stats = await store.chunk_stats()
+    assert stats.n_chunks == 0
+    assert stats.total_tokens == 0
 
 
 async def test_model_registry_single_active(store):
@@ -232,3 +237,25 @@ async def test_page_delete_cascades_chunks_and_vectors(store):
     await store.conn.commit()
     assert await store.get_chunks([chunk.id]) == []
     assert await store.get_page_vectors(model_id="voyage-3.5") == []
+
+
+async def test_cluster_members_return_named_rows(store):
+    page = _page()
+    await store.insert_page(page)
+    cluster = Cluster(
+        id="cluster-a",
+        label=None,
+        keywords=[],
+        size=1,
+        model_id="voyage-3.5",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    await store.upsert_cluster(cluster)
+    await store.replace_cluster_members(
+        cluster_id=ClusterId("cluster-a"), members=[(page.id, 0.75)]
+    )
+    members = await store.cluster_members(ClusterId("cluster-a"))
+    assert [(member.page_id, member.probability) for member in members] == [
+        (page.id, 0.75)
+    ]

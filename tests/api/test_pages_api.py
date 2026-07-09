@@ -12,6 +12,8 @@ from refindery.domain.models import BlacklistKind
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
 
 AUTH = {"Authorization": f"Bearer {TEST_TOKEN}"}
+CORE_FAILURE = "boom during core indexing"
+ENTITY_FAILURE = "entity extraction exploded"
 BODY = {
     "url": "https://example.com/article?utm_source=x",
     "title": "An Article",
@@ -19,6 +21,16 @@ BODY = {
     "fetched_at": "2026-07-08T10:00:00Z",
     "source": "extension",
 }
+
+
+class _CoreIndexError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(CORE_FAILURE)
+
+
+class _EntityExtractionError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(ENTITY_FAILURE)
 
 
 @pytest.fixture
@@ -49,6 +61,17 @@ async def _wait_for_page_status(client, page_id: str, wanted: str) -> dict:
                 return data
             if data["status"] in {"failed", "dead"} and wanted == "indexed":
                 pytest.fail(f"page entered {data['status']}: {data.get('last_error')}")
+            await asyncio.sleep(0.05)
+
+
+async def _wait_for_entity_status(client, page_id: str, wanted: str) -> dict:
+    async with asyncio.timeout(20):
+        while True:
+            response = await client.get(f"/v1/pages/{page_id}/status", headers=AUTH)
+            assert response.status_code == 200
+            data = response.json()
+            if data["features"]["entities"]["status"] == wanted:
+                return data
             await asyncio.sleep(0.05)
 
 
@@ -157,7 +180,72 @@ async def test_indexed_page_is_searchable_in_vector_store(harness):
     assert hits[0].page_id == page_id
     # Page vector rolled up for the active model.
     vectors = await container.store.get_page_vectors(model_id="fake-model")
-    assert [pid for pid, _ in vectors] == [PageId(page_id)]
+    assert [row.page_id for row in vectors] == [PageId(page_id)]
+
+
+async def test_failed_core_index_cleans_artifacts_and_search_excludes(
+    tmp_path, monkeypatch
+):
+    container = build_test_container(tmp_path)
+    original = container.vector_store.upsert_chunks
+
+    async def fail_after_write(points) -> None:
+        await original(points)
+        raise _CoreIndexError
+
+    monkeypatch.setattr(container.vector_store, "upsert_chunks", fail_after_write)
+    app = create_app(make_test_settings(tmp_path), container=container)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post("/v1/pages", json=BODY, headers=AUTH)
+            assert response.status_code == 202
+            page_id = response.json()["page_id"]
+
+            data = await _wait_for_page_status(client, page_id, "dead")
+            assert CORE_FAILURE in (data["last_error"] or "")
+            assert await container.store.chunks_for_page(PageId(page_id)) == []
+            assert await container.vector_store.count_chunks(PageId(page_id)) == 0
+
+            search = await client.post(
+                "/v1/search", json={"query": "hexagonal"}, headers=AUTH
+            )
+            assert search.status_code == 200
+            assert all(r["page_id"] != page_id for r in search.json()["results"])
+
+
+class _FailingEntityExtractor:
+    def health_check(self) -> bool:
+        return True
+
+    async def extract(self, _text: str) -> None:
+        raise _EntityExtractionError
+
+
+async def test_entity_job_failure_leaves_page_indexed_and_visible_in_status(tmp_path):
+    container = build_test_container(tmp_path, extractor=_FailingEntityExtractor())
+    app = create_app(make_test_settings(tmp_path), container=container)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post("/v1/pages", json=BODY, headers=AUTH)
+            assert response.status_code == 202
+            page_id = response.json()["page_id"]
+            await _wait_for_page_status(client, page_id, "indexed")
+
+            data = await _wait_for_entity_status(client, page_id, "dead")
+            assert data["status"] == "indexed"
+            assert data["last_error"] is None
+            assert ENTITY_FAILURE in (data["features"]["entities"]["last_error"] or "")
+
+            jobs = (
+                await client.get("/v1/jobs?status_filter=dead", headers=AUTH)
+            ).json()
+            assert any(job["kind"] == "extract_entities" for job in jobs["jobs"])
 
 
 async def test_dead_job_visible_and_page_dead(client):

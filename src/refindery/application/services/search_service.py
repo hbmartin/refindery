@@ -38,7 +38,7 @@ from refindery.domain.errors import (
     RefinderyError,
 )
 from refindery.domain.ids import ClusterId, PageId, QueryId, new_query_id
-from refindery.domain.models import Chunk, Page
+from refindery.domain.models import Chunk, Page, PageStatus
 from refindery.domain.retrieval import (
     ChunkHit,
     PageScore,
@@ -244,11 +244,17 @@ class SearchService:
             except ValueError:
                 return []
             page = await self._store.get_page_by_canonical_url(canonical.url)
-            return [] if page is None else [page.id]
+            return (
+                []
+                if page is None or page.status is not PageStatus.INDEXED
+                else [page.id]
+            )
         if _BARE_DOMAIN.match(text.lower()):
-            return await self._store.list_page_ids_by_domain(
+            page_ids = await self._store.list_page_ids_by_domain(
                 domain=text.lower().removeprefix("www."), limit=5
             )
+            pages = await self._store.get_pages(page_ids)
+            return [page.id for page in pages if page.status is PageStatus.INDEXED]
         return []
 
     async def _rerank(
@@ -298,7 +304,9 @@ class SearchService:
             page_rows = await self._store.get_pages(
                 [*exact_pages, *[p.page_id for p in pages]]
             )
-            by_id = {page.id: page for page in page_rows}
+            by_id = {
+                page.id: page for page in page_rows if page.status is PageStatus.INDEXED
+            }
 
             if request.recency_half_life_days is not None:
                 pages = apply_recency_decay(
@@ -331,8 +339,10 @@ class SearchService:
                     continue
                 page = by_id.get(page_score.page_id)
                 if page is None:
-                    # Purged mid-flight: metadata is authoritative; drop the hit.
-                    logger.info("dropping hit for purged page %s", page_score.page_id)
+                    logger.info(
+                        "dropping hit for non-indexed or purged page %s",
+                        page_score.page_id,
+                    )
                     continue
                 top_chunks = page_score.chunks[: request.chunks_per_page]
                 chunk_rows = await self._store.get_chunks(

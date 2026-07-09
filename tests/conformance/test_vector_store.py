@@ -16,7 +16,7 @@ from refindery.application.ports.vector_store import (
 from refindery.domain.ids import ChunkId, PageId
 from refindery.domain.retrieval import rrf_fuse
 from refindery.domain.rollup import Vector
-from tests.conformance.conftest import DIM, MODEL_A, MODEL_B
+from tests.conformance.conftest import DIM, MODEL_A, MODEL_B, MODEL_SLASH
 from tests.fakes.embedder import hash_vector
 
 T0 = datetime(2026, 6, 1, tzinfo=UTC)
@@ -212,3 +212,23 @@ async def test_model_isolation_and_backfill(vector_store):
     assert hits_a[0].chunk_id == target.chunk_id
 
     await vector_store.drop_model(MODEL_B.id)
+
+
+async def test_model_ids_with_slashes_are_adapter_safe(vector_store):
+    await vector_store.add_model(MODEL_SLASH)
+    text = "Slash model ids should not leak into adapter table names."
+    point = _point(
+        "p-slash",
+        0,
+        text,
+        models=(MODEL_A.id, MODEL_SLASH.id),
+    )
+    await vector_store.upsert_chunks([point])
+    hits = await vector_store.dense_query(
+        model_id=MODEL_SLASH.id,
+        vector=_query_vector(text, model_id=MODEL_SLASH.id),
+        limit=1,
+    )
+    assert hits
+    assert hits[0].page_id == "p-slash"
+    await vector_store.drop_model(MODEL_SLASH.id)

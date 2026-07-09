@@ -69,7 +69,10 @@ class PulpieHtmlExtractor:
 
     async def extract(self, *, raw: bytes, charset: str | None) -> ExtractedContent:
         """Decode and extract markdown body text from HTML."""
-        html = raw.decode(charset or "utf-8", errors="replace")
+        try:
+            html = raw.decode(charset or "utf-8", errors="replace")
+        except LookupError:
+            html = raw.decode("utf-8", errors="replace")
         loop = asyncio.get_running_loop()
         markdown = await loop.run_in_executor(self._executor, _extract_markdown, html)
         return ExtractedContent(body_text=markdown)

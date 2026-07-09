@@ -10,20 +10,23 @@ from refindery.adapters.observability.otel import span
 from refindery.api.deps import get_container
 from refindery.api.schemas import (
     BlacklistedResponse,
+    FeatureStatus,
     IngestAcceptedResponse,
     IngestPageRequest,
     IngestRevisitResponse,
     PageResponse,
+    PageStatusFeatures,
     PageStatusResponse,
 )
 from refindery.application.container import Container
 from refindery.application.services.ingest import IngestRequest
-from refindery.domain.errors import ExtractionUnavailableError
+from refindery.domain.errors import BodyConflictError, ExtractionUnavailableError
 from refindery.domain.ids import PageId
 from refindery.domain.models import (
     IngestBlacklisted,
     IngestQueued,
     IngestRevisit,
+    JobKind,
     Page,
     PageStatus,
 )
@@ -64,6 +67,10 @@ async def add_page(
                     metadata=request.metadata,
                 )
             )
+    except BodyConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
@@ -158,11 +165,19 @@ async def page_status(
     page = await _require_page(container, page_id)
     last_error: str | None = None
     if page.status in {PageStatus.FAILED, PageStatus.DEAD}:
-        jobs = await container.store.list_jobs(status=None, limit=200)
-        for job in jobs:
-            if job.payload.get("page_id") == page.id and job.last_error:
-                last_error = job.last_error
-                break
+        job = await container.store.latest_job_for_page(page_id=page.id)
+        last_error = None if job is None else job.last_error
+    entity_job = await container.store.latest_job_for_page(
+        page_id=page.id, kind=JobKind.EXTRACT_ENTITIES
+    )
+    entities = (
+        FeatureStatus(status="not_queued", last_error=None)
+        if entity_job is None
+        else FeatureStatus(status=entity_job.status, last_error=entity_job.last_error)
+    )
     return PageStatusResponse(
-        page_id=page.id, status=page.status, last_error=last_error
+        page_id=page.id,
+        status=page.status,
+        last_error=last_error,
+        features=PageStatusFeatures(entities=entities),
     )

@@ -70,8 +70,8 @@ async def cluster_pages(
             status_code=status.HTTP_404_NOT_FOUND, detail="cluster not found"
         )
     members = await container.store.cluster_members(ClusterId(cluster_id))
-    pages = await container.store.get_pages([pid for pid, _ in members])
-    probability = dict(members)
+    pages = await container.store.get_pages([member.page_id for member in members])
+    probability = {member.page_id: member.probability for member in members}
     return ClusterDetailResponse(
         cluster=_summary(cluster),
         pages=[

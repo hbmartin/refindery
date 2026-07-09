@@ -118,6 +118,32 @@ async def test_forget_domain_purges_and_blocks(harness):
     assert blocked.json()["pattern"] == "tracker.example"
 
 
+async def test_forget_domain_normalizes_and_escapes_sql_wildcards(harness):
+    client, _container = harness
+    ids = await _ingest_and_wait(
+        client,
+        [
+            _page("https://a_b.example/a", "secret alpha"),
+            _page("https://sub.a_b.example/b", "secret beta"),
+            _page("https://axb.example/c", "secret gamma"),
+        ],
+    )
+
+    response = await client.post(
+        "/v1/forget",
+        json={"domain": "https://www.a_b.example/some/path"},
+        headers=AUTH,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["pattern"] == "a_b.example"
+    assert data["pages_purged"] == 2
+
+    assert (await client.get(f"/v1/pages/{ids[0]}", headers=AUTH)).status_code == 404
+    assert (await client.get(f"/v1/pages/{ids[1]}", headers=AUTH)).status_code == 404
+    assert (await client.get(f"/v1/pages/{ids[2]}", headers=AUTH)).status_code == 200
+
+
 async def test_forget_url_is_idempotent(harness):
     client, _container = harness
     await _ingest_and_wait(client, [_page("https://one.example/x", "x content")])

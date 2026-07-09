@@ -7,19 +7,20 @@ Chunk ids are deterministic — ``uuid5(page_id : content_hash : ordinal)`` —
 so retries and re-index runs upsert the same vector-store points instead of
 orphaning old ones.
 
-Entity extraction and cluster-staleness are pipeline hooks (no-ops until M4).
+Entity extraction is a separate durable job, so retrieval artifacts can be
+visible even when entity enrichment needs a retry.
 """
 
 import asyncio
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from functools import partial
 
 from refindery.application.ports.chunker import Chunker
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.content_extractor import Fetcher
+from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.vector_store import ChunkPoint, VectorStore
 from refindery.application.services.extraction_router import ExtractionRouter
@@ -27,16 +28,10 @@ from refindery.application.services.model_registry import ModelRegistry
 from refindery.domain.content_hash import content_hash
 from refindery.domain.errors import PageHasNoBodyError, PageNotFoundError
 from refindery.domain.ids import ChunkId, PageId
-from refindery.domain.models import Chunk, Job, Page, PageStatus
+from refindery.domain.models import Job, JobKind, Page, PageStatus
 from refindery.domain.rollup import PoolingStrategy, Vector, page_vector
 
 logger = logging.getLogger(__name__)
-
-type PageHook = Callable[[Page, list[Chunk]], Awaitable[None]]
-
-
-async def _noop_hook(_page: Page, _chunks: list[Chunk]) -> None:
-    return
 
 
 def deterministic_chunk_id(*, page_id: PageId, page_hash: str, ordinal: int) -> ChunkId:
@@ -59,8 +54,8 @@ class IndexingService:
         clock: Clock,
         fetcher: Fetcher,
         router: ExtractionRouter,
+        queue: JobQueue | None = None,
         pooling: PoolingStrategy = PoolingStrategy.MEAN,
-        on_page_indexed: PageHook = _noop_hook,
     ) -> None:
         self._store = store
         self._vector_store = vector_store
@@ -69,12 +64,12 @@ class IndexingService:
         self._clock = clock
         self._fetcher = fetcher
         self._router = router
+        self._queue = queue
         self._pooling = pooling
-        self._on_page_indexed = on_page_indexed
 
-    def set_page_hook(self, hook: PageHook) -> None:
-        """Attach the entity-extraction hook (breaks wiring cycles)."""
-        self._on_page_indexed = hook
+    def set_queue(self, queue: JobQueue) -> None:
+        """Attach the durable queue after construction (breaks wiring cycles)."""
+        self._queue = queue
 
     # -- job handlers ---------------------------------------------------------
 
@@ -107,6 +102,8 @@ class IndexingService:
 
     async def mark_page_dead(self, job: Job, error: str) -> None:
         """Dead-job callback: the page is excluded from search."""
+        if job.kind not in {JobKind.INDEX_PAGE, JobKind.FETCH_AND_INDEX}:
+            return
         page_id = PageId(job.payload.get("page_id", ""))
         if page_id:
             logger.warning("page %s dead after job %s: %s", page_id, job.id, error)
@@ -127,12 +124,14 @@ class IndexingService:
             await self._run_pipeline(page)
         except Exception:
             await self._store.set_page_status(page_id=page.id, status=PageStatus.FAILED)
+            await self._cleanup_failed_core(page)
             raise
         await self._store.set_page_status(
             page_id=page.id,
             status=PageStatus.INDEXED,
             indexed_at=self._clock.now(),
         )
+        await self._enqueue_entity_extraction(page)
 
     async def _run_pipeline(self, page: Page) -> None:
         assert page.body_text is not None  # noqa: S101 — checked by _index
@@ -190,4 +189,30 @@ class IndexingService:
                 page_id=page.id, model_id=model_id, vector=pooled.tobytes()
             )
 
-        await self._on_page_indexed(page, chunks)
+    async def _enqueue_entity_extraction(self, page: Page) -> None:
+        if self._queue is None or page.content_hash is None:
+            return
+        await self._queue.enqueue(
+            kind=JobKind.EXTRACT_ENTITIES,
+            payload={"page_id": page.id, "content_hash": page.content_hash},
+            idempotency_key=f"entities:{page.id}:{page.content_hash}",
+        )
+
+    async def _cleanup_failed_core(self, page: Page) -> None:
+        """Best-effort cleanup so failed pages cannot retain retrieval artifacts."""
+        try:
+            await self._store.clear_index_artifacts(page.id)
+        except Exception:  # noqa: BLE001 — best-effort cleanup must not mask failure
+            logger.warning(
+                "failed to clear metadata artifacts for page %s",
+                page.id,
+                exc_info=True,
+            )
+        try:
+            await self._vector_store.delete_pages([page.id])
+        except Exception:  # noqa: BLE001 — best-effort cleanup must not mask failure
+            logger.warning(
+                "failed to delete vector artifacts for page %s",
+                page.id,
+                exc_info=True,
+            )

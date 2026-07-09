@@ -40,6 +40,7 @@ from refindery.config import (
 )
 from refindery.domain.models import EmbeddingModel, JobKind
 from tests.fakes.embedder import FakeEmbedder
+from tests.fakes.entity_extractor import FakeEntityExtractor
 from tests.fakes.extraction import FakeFetcher, FakeHtmlExtractor
 from tests.fakes.reranker import FakeReranker
 from tests.fakes.surface_embedder import FakeSurfaceEmbedder
@@ -135,6 +136,7 @@ def build_test_container(
         },
         on_dead=indexing.mark_page_dead,
     )
+    indexing.set_queue(queue)
     ingest = IngestService(store=store, queue=queue, clock=clock, router=router)
     sink = DuckDbSink(settings.duckdb.path)
     query_log = DuckDbQueryLog(sink)
@@ -158,9 +160,13 @@ def build_test_container(
         store=store, surface_embedder=FakeSurfaceEmbedder(), clock=clock
     )
     entity_ingest = EntityIngestService(
-        extractor=extractor, canonicalization=canonicalization
+        store=store,
+        extractor=extractor or FakeEntityExtractor({}),
+        canonicalization=canonicalization,
     )
-    indexing.set_page_hook(entity_ingest.on_page_indexed)
+    queue.add_handler(
+        JobKind.EXTRACT_ENTITIES, entity_ingest.handle_extract_entities_job
+    )
     clustering = ClusterRunService(
         store=store,
         engine=cluster_engine or _InlineClusterEngine(),
@@ -207,6 +213,7 @@ def build_test_container(
         feedback=feedback,
         forget=forget,
         canonicalization=canonicalization,
+        entity_ingest=entity_ingest,
         clustering=clustering,
         idle_detector=idle_detector,
         backfill=backfill,

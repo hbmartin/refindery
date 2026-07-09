@@ -101,28 +101,32 @@ class BackfillService:
     async def estimate(self, model_id: str) -> BackfillEstimate:
         """Exact cost/duration estimate from stored chunk stats."""
         model = await self._registry.require_model(model_id)
-        n_chunks, total_tokens = await self._store.chunk_stats()
+        stats = await self._store.chunk_stats()
         price = self._prices.get(model.provider)
         return BackfillEstimate(
             model_id=model_id,
-            n_chunks=n_chunks,
-            total_tokens=total_tokens,
-            est_cost_usd=(None if price is None else total_tokens / 1_000_000 * price),
-            est_duration_s=(n_chunks / _EMBED_BATCH) * 0.5 if n_chunks else 0.0,
+            n_chunks=stats.n_chunks,
+            total_tokens=stats.total_tokens,
+            est_cost_usd=(
+                None if price is None else stats.total_tokens / 1_000_000 * price
+            ),
+            est_duration_s=(
+                (stats.n_chunks / _EMBED_BATCH) * 0.5 if stats.n_chunks else 0.0
+            ),
         )
 
     async def start(self, model_id: str) -> None:
         """Mark backfilling and enqueue the durable job."""
         model = await self._registry.require_model(model_id)
-        n_chunks, total_tokens = await self._store.chunk_stats()
+        stats = await self._store.chunk_stats()
         now = self._clock.now()
         existing = await self._store.get_backfill(model_id)
         if existing is None or existing.finished_at is not None:
             await self._store.upsert_backfill(
                 ModelBackfill(
                     model_id=model.id,
-                    total_chunks=n_chunks,
-                    total_tokens=total_tokens,
+                    total_chunks=stats.n_chunks,
+                    total_tokens=stats.total_tokens,
                     started_at=now,
                     updated_at=now,
                 )

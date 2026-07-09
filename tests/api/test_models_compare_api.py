@@ -6,10 +6,11 @@ import httpx
 import pytest
 
 from refindery.api.app import create_app
-from refindery.domain.models import ModelStatus
+from refindery.domain.models import EmbeddingModel, ModelStatus
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
 
 AUTH = {"Authorization": f"Bearer {TEST_TOKEN}"}
+VECTOR_FAILURE = "cannot create vector space"
 
 PAGES = [
     {
@@ -30,6 +31,11 @@ NEW_MODEL = {
     "dim": 32,
     "max_input_tokens": 32_000,
 }
+
+
+class _VectorSpaceError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(VECTOR_FAILURE)
 
 
 @pytest.fixture
@@ -89,9 +95,9 @@ async def test_backfill_activate_retire_compare_flow(harness):
     estimate = (
         await client.post("/v1/models/fake-model-b/backfill", json={}, headers=AUTH)
     ).json()
-    n_chunks, total_tokens = await container.store.chunk_stats()
-    assert estimate["n_chunks"] == n_chunks > 0
-    assert estimate["total_tokens"] == total_tokens > 0
+    stats = await container.store.chunk_stats()
+    assert estimate["n_chunks"] == stats.n_chunks > 0
+    assert estimate["total_tokens"] == stats.total_tokens > 0
     assert estimate["est_cost_usd"] is None  # no price map configured
     assert estimate["confirm_required"] is True
 
@@ -108,7 +114,7 @@ async def test_backfill_activate_retire_compare_flow(harness):
     state = await container.store.get_backfill("fake-model-b")
     assert state is not None
     assert state.finished_at is not None
-    assert state.embedded_chunks == n_chunks
+    assert state.embedded_chunks == stats.n_chunks
     assert state.cursor_page_id is not None
 
     # Both model spaces answer dense queries independently.
@@ -151,3 +157,41 @@ async def test_compare_rejects_unready_model(harness):
     )
     assert response.status_code == 422
     assert "registered" in response.json()["detail"]
+
+
+async def test_compare_rejects_candidates_below_k(harness):
+    client, _container, _ids = harness
+    response = await client.post(
+        "/v1/compare",
+        json={
+            "query": "x",
+            "models": ["fake-model", "fake-model-b"],
+            "k": 10,
+            "candidates": 2,
+        },
+        headers=AUTH,
+    )
+    assert response.status_code == 422
+    assert "candidates" in str(response.json())
+
+
+async def test_model_registration_rolls_back_on_vector_failure(harness, monkeypatch):
+    _client, container, _ids = harness
+
+    async def fail_add_model(model) -> None:
+        raise _VectorSpaceError
+
+    monkeypatch.setattr(container.vector_store, "add_model", fail_add_model)
+    model = EmbeddingModel(
+        id="sentence-transformers/all-MiniLM-L6-v2",
+        provider="fake",
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        dim=32,
+        max_input_tokens=32_000,
+        is_active=False,
+        status=ModelStatus.REGISTERED,
+        created_at=container.clock.now(),
+    )
+    with pytest.raises(RuntimeError):
+        await container.registry.register(model)
+    assert await container.store.get_model(model.id) is None

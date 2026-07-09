@@ -58,6 +58,19 @@ export REFINDERY_AUTH_TOKEN="$(openssl rand -hex 24)"
 python -m refindery
 ```
 
+### Fully containerized
+
+The multi-stage `Dockerfile` builds a slim image with the `ner` extra
+(no torch/gliner; add extras to the sync lines if you need them). Data
+lives on the `refindery_data` volume, model caches on `refindery_models`.
+
+```bash
+export REFINDERY_AUTH_TOKEN="$(openssl rand -hex 24)"
+export VOYAGE_API_KEY=...
+docker compose up -d --build
+curl -s http://127.0.0.1:8000/healthz
+```
+
 ### Ingest and search
 
 ```bash

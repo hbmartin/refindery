@@ -23,7 +23,11 @@ async def _timed(arm: Arm) -> tuple[list[ChunkHit], float]:
 async def run_hybrid_query(
     *, query: HybridQuery, dense_arm: Arm, sparse_arm: Arm
 ) -> HybridHits:
-    """Run both arms concurrently and fuse client-side."""
+    """Run both arms concurrently and fuse client-side.
+
+    A failing arm cancels its sibling, and failures propagate wrapped in an
+    ExceptionGroup — catch with ``except*`` rather than a plain ``except``.
+    """
     async with asyncio.TaskGroup() as tg:
         dense_task = tg.create_task(_timed(dense_arm))
         sparse_task = tg.create_task(_timed(sparse_arm))

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 import numpy as np
+import numpy.typing as npt
 from scipy.optimize import linear_sum_assignment
 
 from refindery.domain.ids import ClusterId, PageId, new_cluster_id
@@ -71,7 +72,7 @@ def _matching_cost(
     new_labels: list[int],
     old: dict[ClusterId, frozenset[PageId]],
     new: dict[int, frozenset[PageId]],
-) -> np.ndarray:
+) -> npt.NDArray[np.float64]:
     cost = np.ones((len(new_labels), len(old_ids)), dtype=np.float64)
     for i, label in enumerate(new_labels):
         for j, old_id in enumerate(old_ids):

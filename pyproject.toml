@@ -50,6 +50,9 @@ dependencies = [
     "uvicorn>=0.51.0",
 ]
 
+[project.scripts]
+refindery = "refindery.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/hbmartin/refindery"
 Repository = "https://github.com/hbmartin/refindery"

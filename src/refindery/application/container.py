@@ -112,6 +112,22 @@ class Container:
             logger.exception("entity job reconciliation failed; continuing startup")
         await self.queue.start()
 
+    async def startup_for_eval(self) -> None:
+        """Read-mostly bootstrap for offline eval replay.
+
+        Connects and migrates the metadata store and ensures the vector
+        schema — nothing else. No sink writer (replay must not log), no
+        registry sync (eval must not mutate the registry), no job queue,
+        no clustering. Callers clean up ``store``/``vector_store``/``router``
+        directly rather than via ``shutdown()``.
+        """
+        await self.store.connect()
+        await self.store.migrate()
+        models = await self.store.list_models(
+            statuses=frozenset({ModelStatus.READY})
+        )
+        await self.vector_store.ensure_schema(models)
+
     async def shutdown(self) -> None:
         """Attempt every cleanup step and log individual failures."""
         steps = (

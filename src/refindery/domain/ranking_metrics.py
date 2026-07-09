@@ -1,11 +1,15 @@
-"""Agreement statistics for /compare: Jaccard@k, RBO, Kendall's tau.
+"""Ranking metrics: agreement stats for /compare, relevance metrics for eval.
 
 Hand-implemented (small, pure, well-defined): no maintained PyPI RBO exists,
 and scipy's tau would be a heavy import for fifteen lines. RBO follows the
-extrapolated form of Webber, Moffat & Zobel (2010), eq. 32.
+extrapolated form of Webber, Moffat & Zobel (2010), eq. 32. Relevance
+metrics (nDCG, MRR, recall) use binary gains, matching the boolean
+feedback labels they are scored against.
 """
 
+import math
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 
 
 def jaccard_at_k(a: Sequence[str], b: Sequence[str], k: int) -> float:
@@ -69,3 +73,43 @@ def kendall_tau_intersection(a: Sequence[str], b: Sequence[str]) -> float | None
                 discordant += 1
     total = concordant + discordant
     return (concordant - discordant) / total
+
+
+def ndcg_at_k(
+    ranked: Sequence[str], relevant: AbstractSet[str], k: int
+) -> float | None:
+    """Binary-gain nDCG@k; None when there are no relevant items.
+
+    DCG uses the 1/log2(rank + 1) discount; the ideal DCG places
+    min(len(relevant), k) relevant items at the top.
+    """
+    if not relevant:
+        return None
+    dcg = sum(
+        1.0 / math.log2(rank + 1)
+        for rank, item in enumerate(ranked[:k], start=1)
+        if item in relevant
+    )
+    ideal = sum(
+        1.0 / math.log2(rank + 1)
+        for rank in range(1, min(len(relevant), k) + 1)
+    )
+    return dcg / ideal
+
+
+def reciprocal_rank(ranked: Sequence[str], relevant: AbstractSet[str]) -> float:
+    """1/rank of the first relevant item; 0.0 when none appears."""
+    for rank, item in enumerate(ranked, start=1):
+        if item in relevant:
+            return 1.0 / rank
+    return 0.0
+
+
+def recall_at_k(
+    ranked: Sequence[str], relevant: AbstractSet[str], k: int
+) -> float | None:
+    """Fraction of relevant items in the top k; None when none are relevant."""
+    if not relevant:
+        return None
+    found = sum(1 for item in ranked[:k] if item in relevant)
+    return found / len(relevant)

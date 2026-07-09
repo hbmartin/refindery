@@ -20,10 +20,13 @@ class LoggedRun:
 
     ``final_page_ids`` is the ranking the user actually saw (post-rerank,
     post-rollup, exact matches pinned); ``final_page_ranks`` preserves its
-    absolute ranks when the response was paginated. ``prererank_page_ids``
-    is the first-occurrence page order of the fused candidate set — under
-    the default max rollup this is the ranking rerank-off would have
-    produced, modulo exact-match pins and recency decay.
+    absolute ranks when the response was paginated. A paginated row only
+    sees its own slice: relevant pages outside it count as absent, so
+    metrics computed from such a row understate the full ranking.
+    ``prererank_page_ids`` is the first-occurrence page order of the fused
+    candidate set — under the default max rollup this is the ranking
+    rerank-off would have produced, modulo exact-match pins and recency
+    decay.
     """
 
     query_id: QueryId
@@ -39,15 +42,15 @@ class LoggedRun:
 
     def __post_init__(self) -> None:
         if len(self.final_page_ids) != len(self.final_page_ranks):
-            msg = "final page ids and ranks must have equal lengths"
+            msg = f"run {self.query_id}: page ids and ranks must have equal lengths"
             raise ValueError(msg)
         if any(rank < 1 for rank in self.final_page_ranks):
-            msg = "final page ranks must be positive"
+            msg = f"run {self.query_id}: final page ranks must be positive"
             raise ValueError(msg)
         if any(
             previous >= current for previous, current in pairwise(self.final_page_ranks)
         ):
-            msg = "final page ranks must be strictly increasing"
+            msg = f"run {self.query_id}: final page ranks must be strictly increasing"
             raise ValueError(msg)
 
 

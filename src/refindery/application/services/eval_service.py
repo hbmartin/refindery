@@ -287,6 +287,7 @@ class EvalService:
             run.reranker_model is not None
             and run.params.get("rollup", "max") == "max"
             and not run.params.get("exact_match", False)
+            and run.params.get("offset", 0) == 0
             and recency_is_absent
         ):
             prererank_ndcg = ndcg_at_k(pool, relevant, k)

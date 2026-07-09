@@ -87,6 +87,10 @@ class TestNdcg:
     def test_non_positive_k_is_zero(self, k: int):
         assert ndcg_at_k(ABC, {"a"}, k) == 0.0
 
+    def test_non_positive_k_still_validates_ranks(self):
+        with pytest.raises(ValueError, match="equal lengths"):
+            ndcg_at_k(ABC, {"a"}, 0, absolute_ranks=(1,))
+
     def test_nothing_found_is_zero(self):
         assert ndcg_at_k(["x", "y"], {"a"}, 2) == 0.0
 

@@ -204,6 +204,37 @@ class TestScoreLog:
         ).score_log(k=10)
         assert report.queries[0].rerank_lift is None
 
+    def test_no_lift_for_paginated_slice(self):
+        # an offset slice cannot see earlier pages, so the final-vs-pool
+        # comparison no longer isolates reranking
+        runs = [
+            make_run(
+                "q1",
+                final=("p1", "p2"),
+                final_ranks=(2, 3),
+                prererank=("p2", "p1"),
+                params={**ranking_params(), "offset": 1},
+            )
+        ]
+        report = EvalService(
+            reader=FakeReader(runs, labels_for(q1={"p1": True}))
+        ).score_log(k=10)
+        assert report.queries[0].rerank_lift is None
+
+    def test_lift_kept_for_explicit_zero_offset(self):
+        runs = [
+            make_run(
+                "q1",
+                final=("p1", "p2"),
+                prererank=("p2", "p1"),
+                params={**ranking_params(), "offset": 0},
+            )
+        ]
+        report = EvalService(
+            reader=FakeReader(runs, labels_for(q1={"p1": True}))
+        ).score_log(k=10)
+        assert report.queries[0].rerank_lift == pytest.approx(1.0 - 1.0 / math.log2(3))
+
     def test_no_lift_when_search_did_not_log_recency_setting(self):
         runs = [
             make_run(

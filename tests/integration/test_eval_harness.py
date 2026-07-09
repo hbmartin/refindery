@@ -115,6 +115,7 @@ async def test_score_and_replay_end_to_end(harness, tmp_path):
 
     runs = reader.read_runs()
     assert all(run.final_page_ids for run in runs)
+    assert all(run.final_page_ranks for run in runs)
     assert all(run.prererank_page_ids for run in runs)
 
     # -- replay: rerank on vs off, no new log rows -------------------------

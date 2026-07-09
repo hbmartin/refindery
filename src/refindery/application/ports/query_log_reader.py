@@ -8,6 +8,7 @@ page-level, so pages are the unit every metric is computed over.
 
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import pairwise
 from typing import Protocol
 
 from refindery.domain.ids import PageId, QueryId
@@ -18,10 +19,11 @@ class LoggedRun:
     """One query_log row projected to page-level rankings.
 
     ``final_page_ids`` is the ranking the user actually saw (post-rerank,
-    post-rollup, exact matches pinned). ``prererank_page_ids`` is the
-    first-occurrence page order of the fused candidate set — under the
-    default max rollup this is the ranking rerank-off would have produced,
-    modulo exact-match pins and recency decay.
+    post-rollup, exact matches pinned); ``final_page_ranks`` preserves its
+    absolute ranks when the response was paginated. ``prererank_page_ids``
+    is the first-occurrence page order of the fused candidate set — under
+    the default max rollup this is the ranking rerank-off would have
+    produced, modulo exact-match pins and recency decay.
     """
 
     query_id: QueryId
@@ -32,7 +34,21 @@ class LoggedRun:
     active_model: str
     reranker_model: str | None
     final_page_ids: tuple[PageId, ...]
+    final_page_ranks: tuple[int, ...]
     prererank_page_ids: tuple[PageId, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.final_page_ids) != len(self.final_page_ranks):
+            msg = "final page ids and ranks must have equal lengths"
+            raise ValueError(msg)
+        if any(rank < 1 for rank in self.final_page_ranks):
+            msg = "final page ranks must be positive"
+            raise ValueError(msg)
+        if any(
+            previous >= current for previous, current in pairwise(self.final_page_ranks)
+        ):
+            msg = "final page ranks must be strictly increasing"
+            raise ValueError(msg)
 
 
 class QueryLogReader(Protocol):

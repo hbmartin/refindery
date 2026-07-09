@@ -1,6 +1,7 @@
 """CLI dispatch and eval-score smoke tests."""
 
 import json
+import math
 from datetime import UTC, datetime
 
 import pytest
@@ -19,7 +20,7 @@ from refindery.domain.ids import ChunkId, PageId, QueryId
 TS = datetime(2026, 7, 1, tzinfo=UTC)
 
 
-def _seed_log(db_path) -> None:
+def _seed_log(db_path, *, rank: int = 1) -> None:
     sink = DuckDbSink(db_path)
     log = DuckDbQueryLog(sink)
     sink.start()
@@ -30,13 +31,13 @@ def _seed_log(db_path) -> None:
             ts=TS,
             kind="search",
             query_text="hexagonal ports",
-            params={"k": 10, "rollup": "max"},
+            params={"k": 10, "offset": rank - 1, "rollup": "max"},
             active_model="fake-model",
             reranker_model="fake-reranker",
             candidate_set=(hit,),
             dense_hits=(hit,),
             sparse_hits=(hit,),
-            final_pages=(LoggedPage(page_id=PageId("p1"), score=0.9, rank=1),),
+            final_pages=(LoggedPage(page_id=PageId("p1"), score=0.9, rank=rank),),
             timing_ms={"total": 1.0},
         )
     )
@@ -61,6 +62,20 @@ def test_eval_score_prints_table_and_writes_json(tmp_path, capsys):
     report = json.loads(out.read_text())
     assert report["scored"] == 1
     assert report["models"][0]["ndcg"] == pytest.approx(1.0)
+
+
+def test_eval_score_preserves_absolute_rank(tmp_path, capsys):
+    db = tmp_path / "obs.duckdb"
+    _seed_log(db, rank=2)
+    out = tmp_path / "report.json"
+
+    main(["eval", "score", "--db", str(db), "--json", str(out)])
+
+    capsys.readouterr()
+    report = json.loads(out.read_text())
+    score = report["queries"][0]
+    assert score["ndcg"] == pytest.approx(1.0 / math.log2(3))
+    assert score["reciprocal_rank"] == pytest.approx(0.5)
 
 
 def test_eval_score_missing_db_exits_cleanly(tmp_path):

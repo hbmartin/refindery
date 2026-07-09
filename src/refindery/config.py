@@ -41,6 +41,14 @@ class TokenSpec(BaseModel):
     token: SecretStr
     scopes: tuple[Scope, ...] = (Scope.READ, Scope.WRITE)
 
+    @field_validator("token")
+    @classmethod
+    def _token_not_blank(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            msg = "token must not be blank"
+            raise ValueError(msg)
+        return value
+
     @field_validator("scopes")
     @classmethod
     def _normalize_scopes(cls, value: tuple[Scope, ...]) -> tuple[Scope, ...]:
@@ -265,12 +273,17 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _require_tokens(self) -> Self:
-        names = [spec.name for spec in self.resolved_tokens()]
-        if not names:
+        tokens = self.resolved_tokens()
+        if not tokens:
             msg = "configure REFINDERY_AUTH_TOKEN or REFINDERY_AUTH_TOKENS"
             raise ValueError(msg)
+        names = [spec.name for spec in tokens]
         if len(names) != len(set(names)):
             msg = "auth token names must be unique"
+            raise ValueError(msg)
+        secrets = [spec.token.get_secret_value() for spec in tokens]
+        if len(secrets) != len(set(secrets)):
+            msg = "auth token secrets must be unique"
             raise ValueError(msg)
         return self
 

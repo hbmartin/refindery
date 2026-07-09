@@ -30,3 +30,16 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
 - Deduplicate identifiers while preserving order before batching dynamic SQLite
   `IN` query parameters to at most 999 variables. This avoids redundant queries
   and remains compatible with older SQLite builds.
+- Normalize timezone-naive CLI datetimes to UTC before binding them to DuckDB
+  `TIMESTAMPTZ` queries; otherwise DuckDB interprets them in the session timezone.
+- Keep `DuckDbQueryLogReader` paths typed as `Path` because argparse normalizes
+  `--db` at the CLI boundary. The `query_log.params` column is `JSON NOT NULL`, so
+  readers should surface invalid rows instead of silently replacing `NULL`.
+- Preserve `final_pages.rank` when reading paginated query-log rows and pass those
+  absolute positions into nDCG/MRR/recall; enumerating a returned slice from one
+  inflates offline metrics.
+- Compute reranker lift only when the logged ranking isolates reranking: max
+  rollup, no exact-match pin, and explicitly no recency decay. Log effective
+  search settings, including defaults, so eligibility is auditable.
+- Reject blank or duplicate auth token secrets during settings validation, and
+  make Compose require its token variable instead of substituting an empty value.

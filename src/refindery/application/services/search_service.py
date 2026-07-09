@@ -222,6 +222,8 @@ class SearchService:
             fused=hits.fused,
             dense=hits.dense,
             sparse=hits.sparse,
+            exact_match=bool(exact_pages),
+            recency_half_life_days=recency_half_life_days,
         )
         return outcome
 
@@ -450,6 +452,8 @@ class SearchService:
         fused: list[ChunkHit],
         dense: list[ChunkHit],
         sparse: list[ChunkHit],
+        exact_match: bool,
+        recency_half_life_days: float | None,
     ) -> None:
         def logged(hits: list[ChunkHit]) -> tuple[LoggedHit, ...]:
             return tuple(
@@ -470,7 +474,8 @@ class SearchService:
                 "rollup": request.rollup,
                 "rrf_k": request.rrf_k,
                 "filters": None if request.filters is None else asdict(request.filters),
-                "exact_match": any(r.exact_match for r in outcome.results),
+                "exact_match": exact_match,
+                "recency_half_life_days": recency_half_life_days,
             },
             active_model=model_id,
             reranker_model=(

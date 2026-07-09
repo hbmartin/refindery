@@ -1,5 +1,6 @@
 """EvalService unit tests over hand-built logged runs."""
 
+import math
 from datetime import UTC, datetime
 from typing import Self
 
@@ -15,6 +16,20 @@ from refindery.domain.ids import PageId, QueryId
 TS = datetime(2026, 7, 1, tzinfo=UTC)
 
 
+def ranking_params(
+    *,
+    rollup: str = "max",
+    exact_match: bool = False,
+    recency_half_life_days: float | None = None,
+) -> dict[str, object]:
+    return {
+        "k": 10,
+        "rollup": rollup,
+        "exact_match": exact_match,
+        "recency_half_life_days": recency_half_life_days,
+    }
+
+
 def make_run(
     query_id: str,
     *,
@@ -22,18 +37,22 @@ def make_run(
     model: str = "model-a",
     reranker_model: str | None = "fake-reranker",
     final: tuple[str, ...] = ("p1", "p2", "p3"),
+    final_ranks: tuple[int, ...] | None = None,
     prererank: tuple[str, ...] = ("p2", "p1", "p3"),
-    rollup: str = "max",
+    params: dict[str, object] | None = None,
 ) -> LoggedRun:
     return LoggedRun(
         query_id=QueryId(query_id),
         ts=TS,
         kind="search",
         query_text=query_text,
-        params={"k": 10, "rollup": rollup},
+        params=ranking_params() if params is None else params,
         active_model=model,
         reranker_model=reranker_model,
         final_page_ids=tuple(PageId(p) for p in final),
+        final_page_ranks=(
+            tuple(range(1, len(final) + 1)) if final_ranks is None else final_ranks
+        ),
         prererank_page_ids=tuple(PageId(p) for p in prererank),
     )
 
@@ -125,6 +144,23 @@ class TestScoreLog:
         assert score.recall == pytest.approx(1.0)
         assert score.recall_candidates == pytest.approx(1.0)
 
+    def test_paginated_results_keep_absolute_ranks(self):
+        runs = [
+            make_run(
+                "q1",
+                final=("p1",),
+                final_ranks=(11,),
+                prererank=("p1",),
+            )
+        ]
+        report = EvalService(
+            reader=FakeReader(runs, labels_for(q1={"p1": True}))
+        ).score_log(k=20)
+        (score,) = report.queries
+        assert score.ndcg == pytest.approx(1.0 / math.log2(12))
+        assert score.reciprocal_rank == pytest.approx(1.0 / 11)
+        assert score.recall == pytest.approx(1.0)
+
     def test_rerank_lift_from_candidate_order(self):
         # rerank moved the relevant page from candidate rank 2 to final rank 1
         runs = [make_run("q1", final=("p1", "p2"), prererank=("p2", "p1"))]
@@ -143,7 +179,38 @@ class TestScoreLog:
         assert report.queries[0].rerank_lift is None
 
     def test_no_lift_for_non_max_rollup(self):
-        runs = [make_run("q1", rollup="mean")]
+        runs = [make_run("q1", params=ranking_params(rollup="mean"))]
+        report = EvalService(
+            reader=FakeReader(runs, labels_for(q1={"p1": True}))
+        ).score_log(k=10)
+        assert report.queries[0].rerank_lift is None
+
+    def test_no_lift_for_exact_match_pin(self):
+        runs = [make_run("q1", params=ranking_params(exact_match=True))]
+        report = EvalService(
+            reader=FakeReader(runs, labels_for(q1={"p1": True}))
+        ).score_log(k=10)
+        assert report.queries[0].rerank_lift is None
+
+    def test_no_lift_for_recency_decay(self):
+        runs = [
+            make_run(
+                "q1",
+                params=ranking_params(recency_half_life_days=30.0),
+            )
+        ]
+        report = EvalService(
+            reader=FakeReader(runs, labels_for(q1={"p1": True}))
+        ).score_log(k=10)
+        assert report.queries[0].rerank_lift is None
+
+    def test_no_lift_when_search_did_not_log_recency_setting(self):
+        runs = [
+            make_run(
+                "q1",
+                params={"k": 10, "rollup": "max", "exact_match": False},
+            )
+        ]
         report = EvalService(
             reader=FakeReader(runs, labels_for(q1={"p1": True}))
         ).score_log(k=10)

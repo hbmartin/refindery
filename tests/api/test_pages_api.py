@@ -1,0 +1,180 @@
+"""API contract tests: auth, ingest semantics, status lifecycle, e2e indexing."""
+
+import asyncio
+from datetime import UTC, datetime
+
+import httpx
+import pytest
+
+from refindery.api.app import create_app
+from refindery.domain.ids import PageId, new_blacklist_id
+from refindery.domain.models import BlacklistKind
+from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
+
+AUTH = {"Authorization": f"Bearer {TEST_TOKEN}"}
+BODY = {
+    "url": "https://example.com/article?utm_source=x",
+    "title": "An Article",
+    "body_extracted": "Hexagonal architecture keeps the domain pure. " * 5,
+    "fetched_at": "2026-07-08T10:00:00Z",
+    "source": "extension",
+}
+
+
+@pytest.fixture
+async def harness(tmp_path):
+    container = build_test_container(tmp_path)
+    app = create_app(make_test_settings(tmp_path), container=container)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as http:
+            yield http, container
+
+
+@pytest.fixture
+async def client(harness):
+    http, _container = harness
+    return http
+
+
+async def _wait_for_page_status(client, page_id: str, wanted: str) -> dict:
+    async with asyncio.timeout(20):
+        while True:
+            response = await client.get(f"/v1/pages/{page_id}/status", headers=AUTH)
+            assert response.status_code == 200
+            data = response.json()
+            if data["status"] == wanted:
+                return data
+            if data["status"] in {"failed", "dead"} and wanted == "indexed":
+                pytest.fail(f"page entered {data['status']}: {data.get('last_error')}")
+            await asyncio.sleep(0.05)
+
+
+async def test_requires_bearer_token(client):
+    assert (await client.post("/v1/pages", json=BODY)).status_code == 401
+    bad = {"Authorization": "Bearer wrong"}
+    assert (await client.post("/v1/pages", json=BODY, headers=bad)).status_code == 401
+
+
+async def test_body_xor_validation(client):
+    payload = {**BODY, "body_html": "<p>hi</p>"}
+    response = await client.post("/v1/pages", json=payload, headers=AUTH)
+    assert response.status_code == 422
+
+
+async def test_ingest_indexes_and_revisits(client):
+    response = await client.post("/v1/pages", json=BODY, headers=AUTH)
+    assert response.status_code == 202
+    page_id = response.json()["page_id"]
+    assert response.json()["status"] == "queued"
+
+    await _wait_for_page_status(client, page_id, "indexed")
+
+    # Full page readable, canonical URL stripped of tracking params.
+    page = (await client.get(f"/v1/pages/{page_id}", headers=AUTH)).json()
+    assert page["canonical_url"] == "https://example.com/article"
+    assert page["visit_count"] == 1
+    assert page["body_text"].startswith("Hexagonal architecture")
+
+    # Same canonical URL (different tracking params) -> revisit, body discarded.
+    revisit_body = {**BODY, "url": "https://example.com/article?fbclid=zzz"}
+    response = await client.post("/v1/pages", json=revisit_body, headers=AUTH)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["revisit"] is True
+    assert data["page_id"] == page_id
+    page = (await client.get(f"/v1/pages/{page_id}", headers=AUTH)).json()
+    assert page["visit_count"] == 2
+
+
+async def test_revisit_flags_differing_hash(client):
+    response = await client.post("/v1/pages", json=BODY, headers=AUTH)
+    page_id = response.json()["page_id"]
+    await _wait_for_page_status(client, page_id, "indexed")
+
+    changed = {**BODY, "body_extracted": "Completely different content now."}
+    response = await client.post("/v1/pages", json=changed, headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["content_hash_differs"] is True
+    # Body was discarded.
+    page = (await client.get(f"/v1/pages/{page_id}", headers=AUTH)).json()
+    assert page["body_text"].startswith("Hexagonal architecture")
+
+
+async def test_blacklisted_url_403(harness):
+    client, container = harness
+    await container.store.conn.execute(
+        "INSERT INTO blacklist (id, pattern, kind, reason, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            new_blacklist_id(),
+            "bank.com",
+            BlacklistKind.DOMAIN,
+            "test",
+            datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+        ),
+    )
+    await container.store.conn.commit()
+    payload = {**BODY, "url": "https://secure.bank.com/statement"}
+    response = await client.post("/v1/pages", json=payload, headers=AUTH)
+    assert response.status_code == 403
+    assert response.json() == {"error": "blacklisted", "pattern": "bank.com"}
+
+
+async def test_body_html_ingest_uses_extractor(client):
+    payload = {
+        "url": "https://example.com/html-page",
+        "body_html": "<html><body><h1>Title</h1><p>Paragraph text.</p></body></html>",
+    }
+    response = await client.post("/v1/pages", json=payload, headers=AUTH)
+    assert response.status_code == 202
+    page_id = response.json()["page_id"]
+    await _wait_for_page_status(client, page_id, "indexed")
+    page = (await client.get(f"/v1/pages/{page_id}", headers=AUTH)).json()
+    assert "<" not in page["body_text"]
+    assert "Paragraph text." in page["body_text"]
+
+
+async def test_unknown_page_404(client):
+    assert (await client.get("/v1/pages/nope", headers=AUTH)).status_code == 404
+
+
+async def test_health_endpoints(client):
+    assert (await client.get("/healthz")).status_code == 200
+    assert (await client.get("/readyz")).status_code == 200
+
+
+async def test_indexed_page_is_searchable_in_vector_store(harness):
+    client, container = harness
+    response = await client.post("/v1/pages", json=BODY, headers=AUTH)
+    page_id = response.json()["page_id"]
+    await _wait_for_page_status(client, page_id, "indexed")
+
+    hits = await container.vector_store.sparse_query(text="hexagonal", limit=5)
+    assert hits
+    assert hits[0].page_id == page_id
+    # Page vector rolled up for the active model.
+    vectors = await container.store.get_page_vectors(model_id="fake-model")
+    assert [pid for pid, _ in vectors] == [PageId(page_id)]
+
+
+async def test_dead_job_visible_and_page_dead(client):
+    # Fetch path with no fake response -> job fails -> dead after 2 attempts.
+    payload = {"url": "https://example.com/will-fail"}
+    response = await client.post("/v1/pages", json=payload, headers=AUTH)
+    assert response.status_code == 202
+    page_id = response.json()["page_id"]
+
+    data = await _wait_for_page_status(client, page_id, "dead")
+    assert "no fake response" in (data["last_error"] or "")
+
+    jobs = (await client.get("/v1/jobs?status_filter=dead", headers=AUTH)).json()
+    assert len(jobs["jobs"]) == 1
+    job_id = jobs["jobs"][0]["job_id"]
+
+    # Manual retry runs it again (still failing -> dead again).
+    retried = await client.post(f"/v1/jobs/{job_id}/retry", headers=AUTH)
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "pending"

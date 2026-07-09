@@ -123,9 +123,7 @@ class Container:
         """
         await self.store.connect()
         await self.store.migrate()
-        models = await self.store.list_models(
-            statuses=frozenset({ModelStatus.READY})
-        )
+        models = await self.store.list_models(statuses=frozenset({ModelStatus.READY}))
         await self.vector_store.ensure_schema(models)
 
     async def shutdown(self) -> None:

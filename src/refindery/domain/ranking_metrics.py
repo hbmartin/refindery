@@ -91,8 +91,7 @@ def ndcg_at_k(
         if item in relevant
     )
     ideal = sum(
-        1.0 / math.log2(rank + 1)
-        for rank in range(1, min(len(relevant), k) + 1)
+        1.0 / math.log2(rank + 1) for rank in range(1, min(len(relevant), k) + 1)
     )
     return dcg / ideal
 

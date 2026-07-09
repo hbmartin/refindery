@@ -1,7 +1,11 @@
 """Integration tests for the SQLite metadata store."""
 
+import sqlite3
+from collections.abc import Iterable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+import aiosqlite
 import pytest
 
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
@@ -259,6 +263,52 @@ async def test_cluster_members_return_named_rows(store):
     assert [(member.page_id, member.probability) for member in members] == [
         (page.id, 0.75)
     ]
+
+
+async def test_clusters_for_pages_batches_legacy_sqlite_variable_limit(
+    store: SqliteMetadataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page_ids = [PageId(f"page-{index}") for index in range(1_001)]
+    member_pages = [
+        replace(_page(f"https://example.com/{index}"), id=page_ids[index])
+        for index in (998, 999)
+    ]
+    for page in member_pages:
+        await store.insert_page(page)
+    cluster = Cluster(
+        id="cluster-across-batches",
+        label="Across batches",
+        keywords=[],
+        size=len(member_pages),
+        model_id="voyage-3.5",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    await store.upsert_cluster(cluster)
+    await store.replace_cluster_members(
+        cluster_id=ClusterId(cluster.id),
+        members=[(page.id, 0.75) for page in member_pages],
+    )
+
+    original_execute = store.conn.execute
+    parameter_counts: list[int] = []
+
+    async def execute_with_legacy_limit(
+        sql: str, parameters: Iterable[object] | None = None
+    ) -> aiosqlite.Cursor:
+        parameter_batch = tuple(parameters or ())
+        if len(parameter_batch) > 999:
+            msg = "too many SQL variables"
+            raise sqlite3.OperationalError(msg)
+        parameter_counts.append(len(parameter_batch))
+        return await original_execute(sql, parameters=parameter_batch)
+
+    monkeypatch.setattr(store.conn, "execute", execute_with_legacy_limit)
+
+    clusters = await store.clusters_for_pages(page_ids)
+
+    assert parameter_counts == [999, 2]
+    assert clusters == {page.id: cluster for page in member_pages}
 
 
 async def test_latest_job_for_page_returns_newest_and_filters_by_kind(store):

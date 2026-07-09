@@ -9,6 +9,7 @@ SQLite-specific SQL is allowed here (and only here).
 import json
 import sqlite3
 from datetime import datetime
+from itertools import batched
 from pathlib import Path
 from types import TracebackType
 from typing import Self
@@ -60,6 +61,7 @@ _JOB_COLUMNS = (
     "id, kind, payload, status, idempotency_key, attempts, max_attempts, "
     "lease_until, last_error, created_at, updated_at"
 )
+_SQLITE_VARIABLE_BATCH_SIZE = 999
 
 
 def _ts(value: datetime | None) -> str | None:
@@ -651,22 +653,22 @@ class _EntityClusterMixin:
         return None if row is None else _cluster_from_row(row)
 
     async def clusters_for_pages(self, page_ids: list[PageId]) -> dict[PageId, Cluster]:
-        """Live cluster per page id, in one query; pages without one are absent."""
-        if not page_ids:
-            return {}
-        placeholders = ",".join("?" for _ in page_ids)
-        cursor = await self.conn.execute(
-            "SELECT m.page_id AS member_page_id, c.* FROM cluster_members m "  # noqa: S608
-            "JOIN clusters c ON m.cluster_id = c.id "
-            f"WHERE m.page_id IN ({placeholders}) AND c.tombstoned_at IS NULL "
-            "ORDER BY m.probability DESC, c.id",
-            tuple(page_ids),
-        )
-        rows = await cursor.fetchall()
+        """Live cluster per page id; pages without one are absent."""
         clusters: dict[PageId, Cluster] = {}
-        for row in rows:
-            page_id = PageId(row["member_page_id"])
-            clusters.setdefault(page_id, _cluster_from_row(row))
+        for batch in batched(page_ids, n=_SQLITE_VARIABLE_BATCH_SIZE, strict=False):
+            placeholders = ",".join("?" for _ in batch)
+            cursor = await self.conn.execute(
+                "SELECT m.page_id AS member_page_id, c.* FROM cluster_members m "  # noqa: S608
+                "JOIN clusters c ON m.cluster_id = c.id "
+                f"WHERE m.page_id IN ({placeholders}) "
+                "AND c.tombstoned_at IS NULL "
+                "ORDER BY m.probability DESC, c.id",
+                parameters=batch,
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                page_id = PageId(row["member_page_id"])
+                clusters.setdefault(page_id, _cluster_from_row(row))
         return clusters
 
     async def set_cluster_label(self, *, cluster_id: ClusterId, label: str) -> None:

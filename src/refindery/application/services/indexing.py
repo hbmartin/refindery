@@ -189,6 +189,20 @@ class IndexingService:
                 page_id=page.id, model_id=model_id, vector=pooled.tobytes()
             )
 
+    async def reconcile_entity_jobs(self) -> int:
+        """Enqueue entity jobs lost in the indexed->enqueue crash window."""
+        if self._queue is None:
+            return 0
+        pages = await self._store.indexed_pages_missing_entity_extraction()
+        for page in pages:
+            await self._enqueue_entity_extraction(page)
+        if pages:
+            logger.info(
+                "reconciled %d indexed pages missing entity extraction jobs",
+                len(pages),
+            )
+        return len(pages)
+
     async def _enqueue_entity_extraction(self, page: Page) -> None:
         if self._queue is None or page.content_hash is None:
             return

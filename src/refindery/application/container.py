@@ -106,6 +106,7 @@ class Container:
         )
         await self.vector_store.ensure_schema(models)
         await self.queue.recover()
+        await self.indexing.reconcile_entity_jobs()
         await self.queue.start()
 
     async def shutdown(self) -> None:

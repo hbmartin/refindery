@@ -259,3 +259,85 @@ async def test_cluster_members_return_named_rows(store):
     assert [(member.page_id, member.probability) for member in members] == [
         (page.id, 0.75)
     ]
+
+
+async def test_latest_job_for_page_returns_newest_and_filters_by_kind(store):
+    page = _page()
+    await store.insert_page(page)
+    index_job = Job(
+        id=new_job_id(),
+        kind=JobKind.INDEX_PAGE,
+        payload={"page_id": page.id},
+        status=JobStatus.DONE,
+        idempotency_key=f"index_page:{page.id}",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    entity_job = Job(
+        id=new_job_id(),
+        kind=JobKind.EXTRACT_ENTITIES,
+        payload={"page_id": page.id, "content_hash": "abc123"},
+        status=JobStatus.DEAD,
+        idempotency_key=f"entities:{page.id}:abc123",
+        created_at=NOW + timedelta(minutes=1),
+        updated_at=NOW + timedelta(minutes=1),
+    )
+    assert await store.create_job(index_job)
+    assert await store.create_job(entity_job)
+
+    newest = await store.latest_job_for_page(page_id=page.id)
+    assert newest is not None
+    assert newest.id == entity_job.id
+    index_only = await store.latest_job_for_page(
+        page_id=page.id, kind=JobKind.INDEX_PAGE
+    )
+    assert index_only is not None
+    assert index_only.id == index_job.id
+    assert await store.latest_job_for_page(page_id=PageId("missing")) is None
+
+
+async def test_list_page_ids_by_domain_status_filter(store):
+    indexed = _page("https://example.com/indexed")
+    queued = _page("https://example.com/queued")
+    await store.insert_page(indexed)
+    await store.insert_page(queued)
+    await store.set_page_status(
+        page_id=indexed.id, status=PageStatus.INDEXED, indexed_at=NOW
+    )
+
+    everything = await store.list_page_ids_by_domain(domain="example.com")
+    assert set(everything) == {indexed.id, queued.id}
+    only_indexed = await store.list_page_ids_by_domain(
+        domain="example.com", status=PageStatus.INDEXED
+    )
+    assert only_indexed == [indexed.id]
+
+
+async def test_indexed_pages_missing_entity_extraction(store):
+    missing = _page("https://example.com/missing")
+    stale = _page("https://example.com/stale")
+    covered = _page("https://example.com/covered")
+    queued = _page("https://example.com/queued")
+    for page in (missing, stale, covered, queued):
+        await store.insert_page(page)
+    for page in (missing, stale, covered):
+        await store.set_page_status(
+            page_id=page.id, status=PageStatus.INDEXED, indexed_at=NOW
+        )
+    for target, content_hash in ((covered, "abc123"), (stale, "old-hash")):
+        assert await store.create_job(
+            Job(
+                id=new_job_id(),
+                kind=JobKind.EXTRACT_ENTITIES,
+                payload={"page_id": target.id, "content_hash": content_hash},
+                status=JobStatus.DONE,
+                idempotency_key=f"entities:{target.id}:{content_hash}",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+
+    pages = await store.indexed_pages_missing_entity_extraction()
+    # `covered` has a job for its current hash; `stale`'s job predates a
+    # content change and `missing` never got one; `queued` is not indexed.
+    assert {page.id for page in pages} == {missing.id, stale.id}

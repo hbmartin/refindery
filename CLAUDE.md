@@ -1,6 +1,6 @@
 ## Workflow
 
-Always run ruff and pytest and ty and pyrefly (with uv) after making any changes
+Always run ruff and pytest and ty and pyrefly and lizard (with uv) after making any changes
 
 ## Development Notes
 

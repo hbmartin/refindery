@@ -63,6 +63,11 @@ stable ids and upserts.
 `/v1/jobs`, logs, and `GET /v1/pages/{id}/status` under
 `features.entities`, but they do not change page retrieval status.
 
+Startup also reconciles the indexed-to-enqueue crash window: any indexed
+page whose current content has no `extract_entities` job gets one enqueued
+before the consumer starts, so a `not_queued` feature status heals itself on
+the next restart.
+
 ## Vector Adapter Caveats
 
 Public model ids are preserved in the API. Vector adapters derive internal

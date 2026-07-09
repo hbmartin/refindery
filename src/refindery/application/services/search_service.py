@@ -24,6 +24,7 @@ from refindery.application.ports.vector_store import (
     StoreFilter,
     VectorStore,
 )
+from refindery.application.services.indexed_pages import indexed_pages_by_id
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.application.services.similarity_service import (
     Mediation,
@@ -250,11 +251,11 @@ class SearchService:
                 else [page.id]
             )
         if _BARE_DOMAIN.match(text.lower()):
-            page_ids = await self._store.list_page_ids_by_domain(
-                domain=text.lower().removeprefix("www."), limit=5
+            return await self._store.list_page_ids_by_domain(
+                domain=text.lower().removeprefix("www."),
+                limit=5,
+                status=PageStatus.INDEXED,
             )
-            pages = await self._store.get_pages(page_ids)
-            return [page.id for page in pages if page.status is PageStatus.INDEXED]
         return []
 
     async def _rerank(
@@ -301,12 +302,9 @@ class SearchService:
         timer: StageTimer,
     ) -> list[SearchResultPage]:
         with timer.stage("hydrate"):
-            page_rows = await self._store.get_pages(
-                [*exact_pages, *[p.page_id for p in pages]]
+            by_id = await indexed_pages_by_id(
+                self._store, [*exact_pages, *[p.page_id for p in pages]]
             )
-            by_id = {
-                page.id: page for page in page_rows if page.status is PageStatus.INDEXED
-            }
 
             if request.recency_half_life_days is not None:
                 pages = apply_recency_decay(

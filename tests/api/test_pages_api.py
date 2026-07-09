@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING, cast
 
 import httpx
 import pytest
@@ -10,6 +11,9 @@ from refindery.api.app import create_app
 from refindery.domain.ids import PageId, new_blacklist_id
 from refindery.domain.models import BlacklistKind
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
+
+if TYPE_CHECKING:
+    from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 
 AUTH = {"Authorization": f"Bearer {TEST_TOKEN}"}
 CORE_FAILURE = "boom during core indexing"
@@ -246,6 +250,26 @@ async def test_entity_job_failure_leaves_page_indexed_and_visible_in_status(tmp_
                 await client.get("/v1/jobs?status_filter=dead", headers=AUTH)
             ).json()
             assert any(job["kind"] == "extract_entities" for job in jobs["jobs"])
+
+
+async def test_reconcile_enqueues_entity_jobs_lost_before_enqueue(harness):
+    client, container = harness
+    response = await client.post("/v1/pages", json=BODY, headers=AUTH)
+    assert response.status_code == 202
+    page_id = response.json()["page_id"]
+    await _wait_for_entity_status(client, page_id, "done")
+
+    # Simulate a crash between the indexed status flip and the enqueue: the
+    # page is indexed but no extract_entities job exists in the ledger.
+    store = cast("SqliteMetadataStore", container.store)
+    await store.conn.execute("DELETE FROM jobs WHERE kind = 'extract_entities'")
+    await store.conn.commit()
+    data = await _wait_for_entity_status(client, page_id, "not_queued")
+    assert data["status"] == "indexed"
+
+    assert await container.indexing.reconcile_entity_jobs() == 1
+    data = await _wait_for_entity_status(client, page_id, "done")
+    assert data["status"] == "indexed"
 
 
 async def test_dead_job_visible_and_page_dead(client):

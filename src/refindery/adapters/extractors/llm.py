@@ -66,9 +66,9 @@ class LlmExtractor:
         for item in parsed:
             cursor = cursors.get(item.surface_form, 0)
             start = snippet.find(item.surface_form, cursor)
-            if start < 0 and cursor:
-                start = snippet.find(item.surface_form)
             if start < 0:
+                # More repeats reported than occurrences exist; dropping the
+                # extra beats double-counting an already-used offset.
                 continue
             cursors[item.surface_form] = start + len(item.surface_form)
             mentions.append(

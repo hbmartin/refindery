@@ -6,6 +6,7 @@ from enum import StrEnum
 import numpy as np
 
 from refindery.application.ports.metadata_store import MetadataStore
+from refindery.application.services.indexed_pages import indexed_page_ids
 from refindery.domain.errors import NoActiveModelError, PageNotFoundError
 from refindery.domain.ids import ClusterId, PageId
 from refindery.domain.models import PageStatus
@@ -62,8 +63,7 @@ class SimilarityService:
         if (model := await self._store.get_active_model()) is None:
             raise NoActiveModelError
         rows = await self._store.get_page_vectors(model_id=model.id)
-        pages = await self._store.get_pages([row.page_id for row in rows])
-        indexed_ids = {page.id for page in pages if page.status is PageStatus.INDEXED}
+        indexed_ids = await indexed_page_ids(self._store, [row.page_id for row in rows])
         return {
             row.page_id: np.frombuffer(row.vector, dtype=np.float32)
             for row in rows
@@ -99,8 +99,9 @@ class SimilarityService:
         vectors = await self._vectors()
         source = vectors.get(page_id)
         scored: list[SimilarPage] = []
-        indexed = await self._store.get_pages([member.page_id for member in members])
-        indexed_ids = {page.id for page in indexed if page.status is PageStatus.INDEXED}
+        indexed_ids = await indexed_page_ids(
+            self._store, [member.page_id for member in members]
+        )
         for member in members:
             pid = member.page_id
             if pid in skip or pid not in indexed_ids:
@@ -130,8 +131,7 @@ class SimilarityService:
                 if pid in skip:
                     continue
                 candidates[pid] = candidates.get(pid, 0.0) + weight
-        pages = await self._store.get_pages(list(candidates))
-        indexed_ids = {page.id for page in pages if page.status is PageStatus.INDEXED}
+        indexed_ids = await indexed_page_ids(self._store, candidates)
         scored: list[SimilarPage] = []
         for pid, shared_weight in candidates.items():
             if pid not in indexed_ids:

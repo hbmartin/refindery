@@ -35,7 +35,9 @@ runs in a process pool.
 
 Observability: OpenTelemetry traces (off by default), structured JSON logs,
 Prometheus `/metrics`, and a DuckDB append-only query log — the substrate for
-offline retrieval evals.
+offline retrieval evals: `refindery eval score` computes nDCG/MRR/recall from
+logged queries + `/v1/feedback` labels, and `refindery eval replay` diffs two
+configurations (models or rerank on/off) over the same golden set.
 
 ## Quickstart
 
@@ -159,7 +161,9 @@ Entity extraction is required at startup. The default extractor chain needs
 the `ner` extra unless you configure a healthy gazetteer, GLiNER, or LLM
 extractor.
 
-See [Operations](docs/operations.md) for alpha reset commands, query-log
+See [Architecture](docs/architecture.md) for the ports/adapters map, the
+ingest→index→cluster data flow, and the search pipeline. See
+[Operations](docs/operations.md) for alpha reset commands, query-log
 purging, job lease behavior, vector-store caveats, and accepted risks.
 
 ## Development

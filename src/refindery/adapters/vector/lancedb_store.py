@@ -26,9 +26,9 @@ import lancedb
 import pyarrow as pa
 from lancedb.index import FTS
 
+from refindery.adapters.vector.hybrid import run_hybrid_query
 from refindery.adapters.vector.names import safe_model_name
 from refindery.application.ports.vector_store import (
-    ArmTiming,
     ChunkPoint,
     HybridHits,
     HybridQuery,
@@ -36,7 +36,7 @@ from refindery.application.ports.vector_store import (
 )
 from refindery.domain.ids import ChunkId, PageId
 from refindery.domain.models import EmbeddingModel
-from refindery.domain.retrieval import ChunkHit, rrf_fuse
+from refindery.domain.retrieval import ChunkHit
 from refindery.domain.rollup import Vector
 
 _CHUNKS_TABLE = "chunks"
@@ -304,42 +304,19 @@ class LanceDbVectorStore:
 
     async def hybrid_query(self, query: HybridQuery) -> HybridHits:
         """Run both arms concurrently and fuse client-side."""
-        dense_ms = 0.0
-        sparse_ms = 0.0
-
-        async def _dense() -> list[ChunkHit]:
-            nonlocal dense_ms
-            started = time.perf_counter()
-            result = await self.dense_query(
+        return await run_hybrid_query(
+            query=query,
+            dense_arm=lambda: self.dense_query(
                 model_id=query.model_id,
                 vector=query.dense_vector,
                 limit=query.per_arm_limit,
                 filters=query.filters,
-            )
-            dense_ms = (time.perf_counter() - started) * 1_000.0
-            return result
-
-        async def _sparse() -> list[ChunkHit]:
-            nonlocal sparse_ms
-            started = time.perf_counter()
-            result = await self.sparse_query(
+            ),
+            sparse_arm=lambda: self.sparse_query(
                 text=query.sparse_text,
                 limit=query.per_arm_limit,
                 filters=query.filters,
-            )
-            sparse_ms = (time.perf_counter() - started) * 1_000.0
-            return result
-
-        dense, sparse = await asyncio.gather(_dense(), _sparse())
-
-        fuse_started = time.perf_counter()
-        fused = rrf_fuse(dense=dense, sparse=sparse, k=query.rrf_k)[: query.fused_limit]
-        fuse_ms = (time.perf_counter() - fuse_started) * 1_000.0
-        return HybridHits(
-            dense=dense,
-            sparse=sparse,
-            fused=fused,
-            timing=ArmTiming(dense_ms=dense_ms, sparse_ms=sparse_ms, fuse_ms=fuse_ms),
+            ),
         )
 
     async def close(self) -> None:

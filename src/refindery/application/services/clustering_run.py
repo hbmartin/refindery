@@ -16,12 +16,13 @@ from refindery.application.ports.cluster_engine import ClusterEngine, ClusterPar
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.services.canonicalization import CanonicalizationService
+from refindery.application.services.indexed_pages import indexed_page_ids
 from refindery.config import ClusterSettings
 from refindery.domain.clustering import dynamic_hdbscan_params, match_clusters
 from refindery.domain.ctfidf import compute_ctfidf
 from refindery.domain.errors import NoActiveModelError, RefinderyError
 from refindery.domain.ids import ClusterId, PageId, new_cluster_run_id
-from refindery.domain.models import Cluster, ClusterRun, Job, JobKind, PageStatus
+from refindery.domain.models import Cluster, ClusterRun, Job, JobKind
 from refindery.domain.rollup import l2_normalize
 
 logger = logging.getLogger(__name__)
@@ -100,8 +101,7 @@ class ClusterRunService:
         rows = await self._store.get_page_vectors(model_id=model.id)
         if len(rows) < self._settings.min_pages:
             return None
-        indexed = await self._store.get_pages([row.page_id for row in rows])
-        indexed_ids = {page.id for page in indexed if page.status is PageStatus.INDEXED}
+        indexed_ids = await indexed_page_ids(self._store, [row.page_id for row in rows])
         rows = [row for row in rows if row.page_id in indexed_ids]
         if len(rows) < self._settings.min_pages:
             return None

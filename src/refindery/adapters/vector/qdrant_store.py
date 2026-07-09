@@ -13,17 +13,16 @@ exposes no ``k`` parameter, and the query log needs both arms anyway).
 
 import asyncio
 import logging
-import time
 from collections.abc import Sequence
 from datetime import datetime
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client import models as qm
 
+from refindery.adapters.vector.hybrid import run_hybrid_query
 from refindery.adapters.vector.names import safe_model_name
 from refindery.adapters.vector.sparse import Bm25SparseEncoder, SparseVec
 from refindery.application.ports.vector_store import (
-    ArmTiming,
     ChunkPoint,
     HybridHits,
     HybridQuery,
@@ -31,7 +30,7 @@ from refindery.application.ports.vector_store import (
 )
 from refindery.domain.ids import ChunkId, PageId
 from refindery.domain.models import EmbeddingModel
-from refindery.domain.retrieval import ChunkHit, rrf_fuse
+from refindery.domain.retrieval import ChunkHit
 from refindery.domain.rollup import Vector
 
 _SPARSE_NAME = "sparse_bm25"
@@ -133,21 +132,28 @@ class QdrantVectorStore:
 
     async def _ensure_payload_indexes(self) -> None:
         """Reconcile filter indexes on every startup."""
+        info = await self._client.get_collection(self._collection)
+        existing = frozenset(info.payload_schema or {})
         for key, schema in (
             ("page_id", qm.PayloadSchemaType.KEYWORD),
             ("domain", qm.PayloadSchemaType.KEYWORD),
             ("cluster_id", qm.PayloadSchemaType.KEYWORD),
             ("first_seen_at", qm.PayloadSchemaType.INTEGER),
         ):
+            if key in existing:
+                continue
             try:
                 await self._client.create_payload_index(
                     collection_name=self._collection,
                     field_name=key,
                     field_schema=schema,
                 )
-            except Exception as exc:  # noqa: BLE001 — already-exists varies by server
-                logger.debug(
-                    "payload index %s already present or unavailable: %s", key, exc
+            except Exception:  # noqa: BLE001 — degraded filters must not block startup
+                logger.warning(
+                    "failed to create payload index %s; filtered queries will "
+                    "scan unindexed payloads",
+                    key,
+                    exc_info=True,
                 )
 
     async def add_model(self, model: EmbeddingModel) -> None:
@@ -305,41 +311,19 @@ class QdrantVectorStore:
 
     async def hybrid_query(self, query: HybridQuery) -> HybridHits:
         """Run both arms concurrently and fuse client-side."""
-        dense_ms = 0.0
-        sparse_ms = 0.0
-
-        async def _dense() -> list[ChunkHit]:
-            nonlocal dense_ms
-            started = time.perf_counter()
-            result = await self.dense_query(
+        return await run_hybrid_query(
+            query=query,
+            dense_arm=lambda: self.dense_query(
                 model_id=query.model_id,
                 vector=query.dense_vector,
                 limit=query.per_arm_limit,
                 filters=query.filters,
-            )
-            dense_ms = (time.perf_counter() - started) * 1_000.0
-            return result
-
-        async def _sparse_query() -> list[ChunkHit]:
-            nonlocal sparse_ms
-            started = time.perf_counter()
-            result = await self.sparse_query(
+            ),
+            sparse_arm=lambda: self.sparse_query(
                 text=query.sparse_text,
                 limit=query.per_arm_limit,
                 filters=query.filters,
-            )
-            sparse_ms = (time.perf_counter() - started) * 1_000.0
-            return result
-
-        dense, sparse = await asyncio.gather(_dense(), _sparse_query())
-        fuse_started = time.perf_counter()
-        fused = rrf_fuse(dense=dense, sparse=sparse, k=query.rrf_k)[: query.fused_limit]
-        fuse_ms = (time.perf_counter() - fuse_started) * 1_000.0
-        return HybridHits(
-            dense=dense,
-            sparse=sparse,
-            fused=fused,
-            timing=ArmTiming(dense_ms=dense_ms, sparse_ms=sparse_ms, fuse_ms=fuse_ms),
+            ),
         )
 
     async def close(self) -> None:

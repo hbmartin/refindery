@@ -92,7 +92,7 @@ class MetadataStore(Protocol):
         ...
 
     async def list_page_ids_by_domain(
-        self, *, domain: str, limit: int = 20
+        self, *, domain: str, limit: int = 20, status: PageStatus | None = None
     ) -> list[PageId]:
         """Page ids for one exact domain, most recently seen first."""
         ...
@@ -190,6 +190,10 @@ class MetadataStore(Protocol):
         self, *, page_id: PageId, kind: JobKind | None = None
     ) -> Job | None:
         """Newest job row for a page payload, optionally restricted by kind."""
+        ...
+
+    async def indexed_pages_missing_entity_extraction(self) -> list[Page]:
+        """Indexed pages whose current content has no extract_entities job."""
         ...
 
     async def mark_job_running(

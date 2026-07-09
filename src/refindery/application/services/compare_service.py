@@ -18,10 +18,11 @@ from refindery.application.ports.query_log import (
 )
 from refindery.application.ports.reranker import RerankCandidate, Reranker
 from refindery.application.ports.vector_store import VectorStore
+from refindery.application.services.indexed_pages import indexed_pages_by_id
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.domain.errors import ModelNotFoundError, RefinderyError
 from refindery.domain.ids import PageId, new_query_id
-from refindery.domain.models import ModelStatus, Page, PageStatus
+from refindery.domain.models import ModelStatus, Page
 from refindery.domain.ranking_metrics import (
     jaccard_at_k,
     kendall_tau_intersection,
@@ -187,10 +188,9 @@ class CompareService:
             for hit in fused
         ]
         page_scores = rollup_pages(chunks=scored, strategy=RollupStrategy.MAX)[:k]
-        pages = await self._store.get_pages([p.page_id for p in page_scores])
-        by_id: dict[PageId, Page] = {
-            page.id: page for page in pages if page.status is PageStatus.INDEXED
-        }
+        by_id: dict[PageId, Page] = await indexed_pages_by_id(
+            self._store, [p.page_id for p in page_scores]
+        )
         ranked = [
             (by_id[p.page_id], p.score) for p in page_scores if p.page_id in by_id
         ]

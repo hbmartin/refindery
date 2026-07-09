@@ -891,8 +891,14 @@ class SqliteMetadataStore(_EntityClusterMixin):
         self._conn = conn
 
     async def migrate(self) -> None:
-        """Apply pending schema migrations."""
+        """Apply pending schema migrations, then dialect-specific backfills."""
         await migrator.migrate(self.conn)
+        await self.conn.execute(
+            "UPDATE jobs SET page_id = json_extract(payload, '$.page_id') "
+            "WHERE page_id IS NULL "
+            "AND json_extract(payload, '$.page_id') IS NOT NULL"
+        )
+        await self.conn.commit()
 
     async def close(self) -> None:
         """Close the connection."""
@@ -967,13 +973,21 @@ class SqliteMetadataStore(_EntityClusterMixin):
         await self.conn.commit()
 
     async def list_page_ids_by_domain(
-        self, *, domain: str, limit: int = 20
+        self, *, domain: str, limit: int = 20, status: PageStatus | None = None
     ) -> list[PageId]:
         """Page ids for one exact domain, most recently seen first."""
-        cursor = await self.conn.execute(
-            "SELECT id FROM pages WHERE domain = ? ORDER BY last_seen_at DESC LIMIT ?",
-            (domain, limit),
-        )
+        if status is None:
+            cursor = await self.conn.execute(
+                "SELECT id FROM pages WHERE domain = ? "
+                "ORDER BY last_seen_at DESC LIMIT ?",
+                (domain, limit),
+            )
+        else:
+            cursor = await self.conn.execute(
+                "SELECT id FROM pages WHERE domain = ? AND status = ? "
+                "ORDER BY last_seen_at DESC LIMIT ?",
+                (domain, status, limit),
+            )
         rows = await cursor.fetchall()
         return [PageId(row["id"]) for row in rows]
 
@@ -1173,8 +1187,8 @@ class SqliteMetadataStore(_EntityClusterMixin):
         """Insert a ledger row; False when the idempotency key already exists."""
         try:
             await self.conn.execute(
-                f"INSERT INTO jobs ({_JOB_COLUMNS}) "  # noqa: S608
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO jobs ({_JOB_COLUMNS}, page_id) "  # noqa: S608
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job.id,
                     job.kind,
@@ -1187,6 +1201,7 @@ class SqliteMetadataStore(_EntityClusterMixin):
                     job.last_error,
                     _ts(job.created_at),
                     _ts(job.updated_at),
+                    job.payload.get("page_id"),
                 ),
             )
         except sqlite3.IntegrityError:
@@ -1229,19 +1244,31 @@ class SqliteMetadataStore(_EntityClusterMixin):
         """Newest job whose payload contains this page id."""
         if kind is None:
             cursor = await self.conn.execute(
-                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE json_extract(payload, "  # noqa: S608
-                "'$.page_id') = ? ORDER BY created_at DESC LIMIT 1",
+                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE page_id = ? "  # noqa: S608
+                "ORDER BY created_at DESC LIMIT 1",
                 (page_id,),
             )
         else:
             cursor = await self.conn.execute(
-                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE kind = ? AND "  # noqa: S608
-                "json_extract(payload, '$.page_id') = ? "
+                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE page_id = ? AND kind = ? "  # noqa: S608
                 "ORDER BY created_at DESC LIMIT 1",
-                (kind, page_id),
+                (page_id, kind),
             )
         row = await cursor.fetchone()
         return None if row is None else _job_from_row(row)
+
+    async def indexed_pages_missing_entity_extraction(self) -> list[Page]:
+        """Indexed pages whose current content has no extract_entities job."""
+        cursor = await self.conn.execute(
+            f"SELECT {_PAGE_COLUMNS} FROM pages WHERE status = ? "  # noqa: S608
+            "AND content_hash IS NOT NULL AND NOT EXISTS ("
+            "SELECT 1 FROM jobs WHERE jobs.kind = ? AND jobs.page_id = pages.id "
+            "AND json_extract(jobs.payload, '$.content_hash') = pages.content_hash"
+            ") ORDER BY first_seen_at",
+            (PageStatus.INDEXED, JobKind.EXTRACT_ENTITIES),
+        )
+        rows = await cursor.fetchall()
+        return [_page_from_row(row) for row in rows]
 
     async def mark_job_running(
         self, *, job_id: JobId, lease_until: datetime, now: datetime

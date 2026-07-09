@@ -94,7 +94,7 @@ class MetadataStore(Protocol):
     async def list_page_ids_by_domain(
         self, *, domain: str, limit: int = 20, status: PageStatus | None = None
     ) -> list[PageId]:
-        """Page ids for one exact domain, optionally restricted by status."""
+        """Page ids for one domain, most recently seen first; optionally by status."""
         ...
 
     async def set_page_status(

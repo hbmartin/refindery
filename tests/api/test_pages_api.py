@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from refindery.api.app import create_app
-from refindery.domain.ids import PageId, new_blacklist_id
+from refindery.domain.ids import JobId, PageId, new_blacklist_id
 from refindery.domain.models import BlacklistKind
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
 
@@ -270,6 +270,67 @@ async def test_reconcile_enqueues_entity_jobs_lost_before_enqueue(harness):
     assert await container.indexing.reconcile_entity_jobs() == 1
     data = await _wait_for_entity_status(client, page_id, "done")
     assert data["status"] == "indexed"
+
+
+async def test_startup_continues_when_entity_reconcile_fails(tmp_path, monkeypatch):
+    container = build_test_container(tmp_path)
+
+    async def exploding_reconcile() -> int:
+        msg = "reconcile exploded"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(
+        container.indexing, "reconcile_entity_jobs", exploding_reconcile
+    )
+    app = create_app(make_test_settings(tmp_path), container=container)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # The consumer started despite the reconcile failure: ingest
+            # still runs end to end.
+            response = await client.post("/v1/pages", json=BODY, headers=AUTH)
+            assert response.status_code == 202
+            await _wait_for_page_status(client, response.json()["page_id"], "indexed")
+
+
+async def test_reconcile_isolates_per_page_enqueue_failures(harness, monkeypatch):
+    client, container = harness
+    page_ids: list[str] = []
+    for i in range(2):
+        payload = {**BODY, "url": f"https://example.com/article-{i}"}
+        response = await client.post("/v1/pages", json=payload, headers=AUTH)
+        assert response.status_code == 202
+        page_ids.append(response.json()["page_id"])
+    for page_id in page_ids:
+        await _wait_for_entity_status(client, page_id, "done")
+
+    # Simulate the crash window for both pages, then make the first enqueue
+    # fail: reconciliation must skip that page and still enqueue the other.
+    store = cast("SqliteMetadataStore", container.store)
+    await store.conn.execute("DELETE FROM jobs WHERE kind = 'extract_entities'")
+    await store.conn.commit()
+
+    real_enqueue = container.queue.enqueue
+    attempts = 0
+
+    async def enqueue_failing_once(**kwargs) -> JobId | None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            msg = "enqueue exploded"
+            raise RuntimeError(msg)
+        return await real_enqueue(**kwargs)
+
+    monkeypatch.setattr(container.queue, "enqueue", enqueue_failing_once)
+
+    assert await container.indexing.reconcile_entity_jobs() == 1
+    # The skipped page is healed by the next reconcile pass.
+    assert await container.indexing.reconcile_entity_jobs() == 1
+    for page_id in page_ids:
+        data = await _wait_for_entity_status(client, page_id, "done")
+        assert data["status"] == "indexed"
 
 
 async def test_dead_job_visible_and_page_dead(client):

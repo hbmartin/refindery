@@ -106,7 +106,10 @@ class Container:
         )
         await self.vector_store.ensure_schema(models)
         await self.queue.recover()
-        await self.indexing.reconcile_entity_jobs()
+        try:
+            await self.indexing.reconcile_entity_jobs()
+        except Exception:
+            logger.exception("entity job reconciliation failed; continuing startup")
         await self.queue.start()
 
     async def shutdown(self) -> None:

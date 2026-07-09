@@ -194,14 +194,25 @@ class IndexingService:
         if self._queue is None:
             return 0
         pages = await self._store.indexed_pages_missing_entity_extraction()
+        reconciled = 0
         for page in pages:
-            await self._enqueue_entity_extraction(page)
-        if pages:
+            try:
+                await self._enqueue_entity_extraction(page)
+            except Exception:  # noqa: BLE001 — recovery must keep scanning pages
+                logger.warning(
+                    "failed to enqueue entity extraction for page %s during "
+                    "reconciliation",
+                    page.id,
+                    exc_info=True,
+                )
+                continue
+            reconciled += 1
+        if reconciled:
             logger.info(
                 "reconciled %d indexed pages missing entity extraction jobs",
-                len(pages),
+                reconciled,
             )
-        return len(pages)
+        return reconciled
 
     async def _enqueue_entity_extraction(self, page: Page) -> None:
         if self._queue is None or page.content_hash is None:

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from refindery.adapters.observability.metrics import ingest_pages_total
 from refindery.adapters.observability.otel import span
+from refindery.api.auth import require_write
 from refindery.api.deps import get_container
 from refindery.api.schemas import (
     BlacklistedResponse,
@@ -37,6 +38,7 @@ router = APIRouter(prefix="/v1/pages", tags=["pages"])
 @router.post(
     "",
     operation_id="add_page",
+    dependencies=[Depends(require_write)],
     summary="Ingest a page",
     description=(
         "Add a page the user read to the index. body_extracted and body_html "

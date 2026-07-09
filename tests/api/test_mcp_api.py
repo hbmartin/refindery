@@ -11,9 +11,15 @@ import pytest
 
 from refindery.api.app import create_app
 from refindery.config import McpSettings
-from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
+from tests.fakes.container import (
+    TEST_READ_TOKEN,
+    TEST_TOKEN,
+    build_test_container,
+    make_test_settings,
+)
 
 AUTH = {"Authorization": f"Bearer {TEST_TOKEN}"}
+READ_AUTH = {"Authorization": f"Bearer {TEST_READ_TOKEN}"}
 GROUNDING = "grounded passages from the user's own reading history"
 
 
@@ -32,9 +38,9 @@ def _parse(response: httpx.Response) -> dict:
     return response.json()
 
 
-async def _list_tools(client: httpx.AsyncClient) -> list[dict]:
+async def _mcp_session(client: httpx.AsyncClient, auth: dict) -> dict:
     headers = {
-        **AUTH,
+        **auth,
         "Accept": "application/json, text/event-stream",
         "Content-Type": "application/json",
     }
@@ -58,11 +64,37 @@ async def _list_tools(client: httpx.AsyncClient) -> list[dict]:
         headers=headers,
     )
     assert notified.status_code in (200, 202), notified.text
+    return headers
+
+
+async def _list_tools(client: httpx.AsyncClient) -> list[dict]:
+    headers = await _mcp_session(client, AUTH)
     listed = await client.post(
         "/mcp", json=_rpc("tools/list", request_id=2), headers=headers
     )
     assert listed.status_code == 200, listed.text
     return _parse(listed)["result"]["tools"]
+
+
+async def _call_add_page(client: httpx.AsyncClient, auth: dict) -> dict:
+    headers = await _mcp_session(client, auth)
+    called = await client.post(
+        "/mcp",
+        json=_rpc(
+            "tools/call",
+            request_id=3,
+            name="add_page",
+            arguments={
+                "url": "https://arch.example/hexagonal",
+                "title": "Hexagonal Architecture",
+                "body_extracted": "Ports and adapters isolate infrastructure.",
+                "fetched_at": "2026-06-01T10:00:00Z",
+            },
+        ),
+        headers=headers,
+    )
+    assert called.status_code == 200, called.text
+    return _parse(called)["result"]
 
 
 @pytest.fixture
@@ -112,6 +144,22 @@ async def test_mutating_tools_opt_in(make_client):
             tools = await _list_tools(client)
     names = {t["name"] for t in tools}
     assert {"add_page", "forget"} <= names
+
+
+async def test_mutating_tool_call_respects_token_scope(make_client):
+    """Visibility comes from the flag; authorization comes from the token."""
+    app, _container = await make_client(enable_mutating=True)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            denied = await _call_add_page(client, READ_AUTH)
+            assert denied.get("isError"), denied
+            assert "write scope" in json.dumps(denied)
+
+            allowed = await _call_add_page(client, AUTH)
+            assert not allowed.get("isError"), allowed
 
 
 async def test_mcp_requires_auth(make_client):

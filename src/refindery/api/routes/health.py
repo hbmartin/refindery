@@ -5,14 +5,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response, status
 
 from refindery.adapters.observability.metrics import render_metrics
-from refindery.api.auth import require_bearer
+from refindery.api.auth import require_read
 from refindery.api.deps import get_container
 from refindery.application.container import Container
 
 router = APIRouter(tags=["health"])
 
 
-@router.get("/metrics", include_in_schema=False, dependencies=[Depends(require_bearer)])
+@router.get("/metrics", include_in_schema=False, dependencies=[Depends(require_read)])
 async def metrics() -> Response:
     """Prometheus metrics (bearer auth; scrapers support bearer_token)."""
     payload, content_type = render_metrics()

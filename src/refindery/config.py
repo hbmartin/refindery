@@ -3,7 +3,8 @@
 Everything is configurable via environment variables with the ``REFINDERY_``
 prefix and ``__`` as the nesting delimiter, e.g.::
 
-    REFINDERY_AUTH_TOKEN=...
+    REFINDERY_AUTH_TOKEN=...             # single full-access token
+    REFINDERY_AUTH_TOKENS='[{"name": "agent", "token": "...", "scopes": ["read"]}]'
     REFINDERY_VECTOR_STORE=lancedb
     REFINDERY_CHUNKING__TARGET_TOKENS=448
 
@@ -12,13 +13,43 @@ Provider API keys use their native variables (``VOYAGE_API_KEY``, ...).
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from refindery.domain.canonical_url import DEFAULT_TRACKING_PARAMS
 from refindery.domain.rollup import PoolingStrategy
+
+
+class Scope(StrEnum):
+    """What a bearer token may do; write implies read."""
+
+    READ = "read"
+    WRITE = "write"
+
+
+class TokenSpec(BaseModel):
+    """One named bearer token with its scopes.
+
+    Configure several as JSON, e.g.::
+
+        REFINDERY_AUTH_TOKENS='[{"name":"agent","token":"...","scopes":["read"]}]'
+    """
+
+    name: str = Field(min_length=1)
+    token: SecretStr
+    scopes: tuple[Scope, ...] = (Scope.READ, Scope.WRITE)
+
+    @field_validator("scopes")
+    @classmethod
+    def _normalize_scopes(cls, value: tuple[Scope, ...]) -> tuple[Scope, ...]:
+        if not value:
+            msg = "token must have at least one scope"
+            raise ValueError(msg)
+        if Scope.WRITE in value and Scope.READ not in value:
+            return (*value, Scope.READ)
+        return value
 
 
 class VectorStoreKind(StrEnum):
@@ -207,7 +238,8 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
     )
 
-    auth_token: SecretStr
+    auth_token: SecretStr | None = None
+    auth_tokens: tuple[TokenSpec, ...] = ()
     bind_host: str = "127.0.0.1"
     bind_port: int = 8000
     vector_store: VectorStoreKind = VectorStoreKind.QDRANT
@@ -231,11 +263,27 @@ class Settings(BaseSettings):
     llm: LlmSettings = LlmSettings()
     observability: ObservabilitySettings = ObservabilitySettings()
 
+    @model_validator(mode="after")
+    def _require_tokens(self) -> Self:
+        names = [spec.name for spec in self.resolved_tokens()]
+        if not names:
+            msg = "configure REFINDERY_AUTH_TOKEN or REFINDERY_AUTH_TOKENS"
+            raise ValueError(msg)
+        if len(names) != len(set(names)):
+            msg = "auth token names must be unique"
+            raise ValueError(msg)
+        return self
+
+    def resolved_tokens(self) -> tuple[TokenSpec, ...]:
+        """Every configured token; the legacy single token is full-access."""
+        legacy = (
+            ()
+            if self.auth_token is None
+            else (TokenSpec(name="default", token=self.auth_token),)
+        )
+        return (*legacy, *self.auth_tokens)
+
 
 def load_settings() -> Settings:
-    """Build settings from environment variables and .env.
-
-    Required fields (auth_token) come from the environment; type checkers
-    cannot see that, hence the suppressions.
-    """
-    return Settings()  # type: ignore[call-arg]  # ty: ignore[missing-argument]  # pyrefly: ignore[missing-argument]
+    """Build settings from environment variables and .env."""
+    return Settings()

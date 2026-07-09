@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from refindery.api.auth import require_write
 from refindery.api.deps import get_container
 from refindery.api.schemas import (
     EntityDetailResponse,
@@ -81,6 +82,7 @@ async def page_entities(
 @router.post(
     "/entities/merges/{merge_id}/undo",
     operation_id="undo_entity_merge",
+    dependencies=[Depends(require_write)],
     summary="Undo an entity merge (LIFO only)",
 )
 async def undo_merge(

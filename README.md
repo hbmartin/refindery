@@ -85,7 +85,25 @@ claude mcp add --transport http refindery http://127.0.0.1:8000/mcp \
 
 Read-only tools are exposed by default (`search`, `get_page`, `similar_to`,
 `list_clusters`, …). Mutating tools (`add_page`, `forget`) are opt-in via
-`REFINDERY_MCP__ENABLE_MUTATING_TOOLS=true`.
+`REFINDERY_MCP__ENABLE_MUTATING_TOOLS=true`. That flag controls visibility
+only — authorization comes from the token's scopes on every transport.
+
+### Auth tokens and scopes
+
+`REFINDERY_AUTH_TOKEN` is a single full-access token. To hand each capture
+source or agent its own revocable token, configure named tokens with `read`
+or `write` scopes (write implies read; both forms can coexist):
+
+```bash
+export REFINDERY_AUTH_TOKENS='[
+  {"name": "chrome-capture", "token": "...", "scopes": ["write"]},
+  {"name": "agent",          "token": "...", "scopes": ["read"]}
+]'
+```
+
+Read-scoped tokens can search, browse, compare, and record feedback;
+mutating endpoints (`add_page`, `forget`, model management, …) return 403
+without the `write` scope.
 
 ## HTTP API
 

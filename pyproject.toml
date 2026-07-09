@@ -1,0 +1,145 @@
+[project]
+name = "refindery"
+version = "0.1.0"
+description = "A local, single-machine retrieval engine over the web pages you read."
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [
+    { name = "Harold Martin", email = "harold.martin@gmail.com" },
+]
+license = "MIT"
+keywords = ["retrieval", "search", "rag", "embeddings", "mcp", "browser-history"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Topic :: Text Processing :: Indexing",
+]
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "catsu>=0.1.8",
+    "chonkie>=1.7.0",
+    "duckdb>=1.5.4",
+    "fastapi>=0.139.0",
+    "fastapi-mcp>=0.4.0",
+    "fastembed>=0.8.0",
+    "httpx>=0.28.1",
+    "huey>=3.1.1",
+    "inflect>=7.5.0",
+    "lancedb>=0.34.0",
+    "model2vec>=0.8.2",
+    "numpy>=2.2",
+    "opentelemetry-api>=1.43.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.43.0",
+    "opentelemetry-instrumentation-fastapi>=0.64b0",
+    "opentelemetry-sdk>=1.43.0",
+    "prometheus-client>=0.25.0",
+    "pyarrow>=24.0.0",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "pypdf>=6.14.2",
+    "qdrant-client>=1.18.0",
+    "rerankers>=0.10.0",
+    "scikit-learn>=1.9.0",
+    "scipy>=1.18.0",
+    "spacy>=3.8.3,<4",
+    "transformers>=5.13.0",
+    "umap-learn>=0.5.12",
+    "uuid6>=2025.0.1",
+    "uvicorn>=0.51.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/hbmartin/refindery"
+Repository = "https://github.com/hbmartin/refindery"
+Changelog = "https://github.com/hbmartin/refindery/releases"
+
+[project.optional-dependencies]
+html = [
+    "torch>=2.13.0",
+]
+gliner = [
+    "gliner>=0.2.24",
+    "gliner-spacy>=0.0.11",
+    "onnxruntime>=1.27.0",
+]
+leiden = [
+    "igraph>=1.0.0",
+    "leidenalg>=0.12.0",
+]
+ner = [
+    "en-core-web-sm",
+]
+
+[dependency-groups]
+dev = [
+    "deptry>=0.24.0",
+    "lizard>=1.23.0",
+    "pyrefly>=1.1.1",
+    "pyroma>=5.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.0.0",
+    "pytest-cov>=7.1.0",
+    "pytest-httpx>=0.36.2",
+    "ruff>=0.15.20",
+    "testcontainers>=4.14.2",
+    "ty>=0.0.57",
+]
+
+[tool.uv]
+# numba is not imported directly; the floor keeps the resolver from walking
+# back to ancient sdists instead of downgrading numpy (numba needs numpy<2.5).
+constraint-dependencies = ["numba>=0.61"]
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+
+[tool.deptry.per_rule_ignores]
+DEP002 = [
+    # Optional extras, imported lazily (deptry cannot see conditional imports):
+    "torch", "gliner", "gliner-spacy", "onnxruntime", "en-core-web-sm",
+    "igraph", "leidenalg",
+    # Lazy imports inside functions/adapters:
+    "scikit-learn", "umap-learn", "spacy", "model2vec",
+    "opentelemetry-exporter-otlp-proto-http",
+    "opentelemetry-instrumentation-fastapi",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "qdrant: requires a running Qdrant instance (QDRANT_URL or Docker)",
+    "slow: slow tests (model downloads, JIT warmup)",
+    "external: hits external APIs; requires credentials",
+]
+addopts = "-m 'not external'"
+
+[tool.coverage.run]
+source = ["src/refindery"]
+
+[tool.pyrefly]
+search-path = ["src", "."]
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [".bzr", ".direnv", ".eggs", ".git", ".git-rewrite", ".hg", ".ipynb_checkpoints", ".mypy_cache", ".nox", ".pants.d", ".pyenv", ".pytest_cache", ".pytype", ".ruff_cache", ".svn", ".tox", ".venv", ".vscode", "__pypackages__", "_build", "buck-out", "build", "dist", "node_modules", "setup.py", "site-packages", "venv"]
+
+line-length = 88
+indent-width = 4
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["COM812", "D105", "D107", "D203", "D212", "D213", "EM101", "PLR2004", "T201"]
+
+[tool.ruff.lint.pylint]
+max-args = 10
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ARG001", "ARG005", "D101", "D102", "D103", "D104", "DTZ003", "ERA001", "F403", "F405", "FBT002", "G004", "N802", "PLC0415", "PLR2004", "PLW1510", "PT011", "PT013", "PTH110", "PTH118", "PTH119", "PTH122", "PTH123", "PTH207", "S101", "S102", "S311", "S603", "S607", "SIM115"]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"

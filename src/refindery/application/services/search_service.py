@@ -351,6 +351,12 @@ class SearchService:
             by_id = await indexed_pages_by_id(
                 self._store, [*exact_pages, *[p.page_id for p in pages]]
             )
+            cluster_refs = {
+                page_id: ClusterRef(id=cluster.id, label=cluster.label)
+                for page_id, cluster in (
+                    await self._store.clusters_for_pages(list(by_id))
+                ).items()
+            }
 
             if recency_half_life_days is not None:
                 pages = apply_recency_decay(
@@ -368,14 +374,13 @@ class SearchService:
             seen: set[PageId] = set()
             for page_id in exact_pages:
                 if (page := by_id.get(page_id)) is not None:
-                    cluster = await self._cluster_ref(page.id)
                     results.append(
                         SearchResultPage(
                             page=page,
                             score=_EXACT_MATCH_SCORE,
                             chunks=(),
                             exact_match=True,
-                            cluster=cluster,
+                            cluster=cluster_refs.get(page.id),
                         )
                     )
                     seen.add(page_id)
@@ -404,17 +409,11 @@ class SearchService:
                             for c in top_chunks
                             if c.chunk_id in chunk_by_id
                         ),
-                        cluster=await self._cluster_ref(page.id),
+                        cluster=cluster_refs.get(page.id),
                     )
                 )
                 seen.add(page_score.page_id)
         return results
-
-    async def _cluster_ref(self, page_id: PageId) -> ClusterRef | None:
-        cluster = await self._store.cluster_for_page(page_id)
-        return (
-            None if cluster is None else ClusterRef(id=cluster.id, label=cluster.label)
-        )
 
     async def _suggestions(
         self, request: SearchQuery, results: list[SearchResultPage]

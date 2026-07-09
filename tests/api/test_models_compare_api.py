@@ -6,7 +6,9 @@ import httpx
 import pytest
 
 from refindery.api.app import create_app
-from refindery.domain.models import EmbeddingModel, ModelStatus
+from refindery.application.ports.reranker import RerankCandidate, RerankScore
+from refindery.domain.ids import ChunkId
+from refindery.domain.models import Chunk, EmbeddingModel, ModelStatus
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
 
 AUTH = {"Authorization": f"Bearer {TEST_TOKEN}"}
@@ -173,6 +175,35 @@ async def test_compare_rejects_candidates_below_k(harness):
     )
     assert response.status_code == 422
     assert "candidates" in str(response.json())
+
+
+async def test_compare_skips_reranker_when_chunk_hydration_is_empty(
+    harness, monkeypatch
+):
+    _client, container, _ids = harness
+
+    async def no_chunks(chunk_ids: list[ChunkId]) -> list[Chunk]:
+        assert chunk_ids
+        return []
+
+    async def fail_rerank(
+        *, query: str, candidates: list[RerankCandidate]
+    ) -> list[RerankScore]:
+        msg = f"rerank should not run for {len(candidates)} hydrated candidates"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(container.store, "get_chunks", no_chunks)
+    assert container.reranker is not None
+    monkeypatch.setattr(container.reranker, "rerank", fail_rerank)
+
+    outcome = await container.compare.compare(
+        query="hexagonal",
+        model_ids=["fake-model"],
+        rerank=True,
+    )
+
+    assert len(outcome.arms) == 1
+    assert outcome.arms[0].pages
 
 
 async def test_model_registration_rolls_back_on_vector_failure(harness, monkeypatch):

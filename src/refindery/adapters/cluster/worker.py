@@ -109,13 +109,13 @@ def _leiden_cluster(
 
     labels = np.full(len(matrix), -1, dtype=np.int64)
     for label, members in enumerate(partition):
-        for vertex in members:
-            labels[int(vertex)] = label
-    next_label = len(partition)
-    for index, label in enumerate(labels):
-        if label < 0:
-            labels[index] = next_label
-            next_label += 1
+        labels[members] = label
+    unassigned_mask = labels < 0
+    n_unassigned = int(np.count_nonzero(unassigned_mask))
+    if n_unassigned > 0:
+        labels[unassigned_mask] = np.arange(
+            len(partition), len(partition) + n_unassigned, dtype=np.int64
+        )
     return labels
 
 

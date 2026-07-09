@@ -45,7 +45,6 @@ class StoreFilter:
     domain: str | None = None
     after: datetime | None = None
     before: datetime | None = None
-    cluster_id: ClusterId | None = None
     page_ids: frozenset[PageId] | None = None
 
 

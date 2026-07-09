@@ -650,6 +650,25 @@ class _EntityClusterMixin:
         row = await cursor.fetchone()
         return None if row is None else _cluster_from_row(row)
 
+    async def clusters_for_pages(self, page_ids: list[PageId]) -> dict[PageId, Cluster]:
+        """Live cluster per page id, in one query; pages without one are absent."""
+        if not page_ids:
+            return {}
+        placeholders = ",".join("?" for _ in page_ids)
+        cursor = await self.conn.execute(
+            "SELECT m.page_id AS member_page_id, c.* FROM cluster_members m "  # noqa: S608
+            "JOIN clusters c ON m.cluster_id = c.id "
+            f"WHERE m.page_id IN ({placeholders}) AND c.tombstoned_at IS NULL "
+            "ORDER BY m.probability DESC, c.id",
+            tuple(page_ids),
+        )
+        rows = await cursor.fetchall()
+        clusters: dict[PageId, Cluster] = {}
+        for row in rows:
+            page_id = PageId(row["member_page_id"])
+            clusters.setdefault(page_id, _cluster_from_row(row))
+        return clusters
+
     async def set_cluster_label(self, *, cluster_id: ClusterId, label: str) -> None:
         """Attach a label."""
         await self.conn.execute(

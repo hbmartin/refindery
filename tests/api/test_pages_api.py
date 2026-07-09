@@ -9,7 +9,7 @@ import pytest
 
 from refindery.api.app import create_app
 from refindery.domain.ids import JobId, PageId, new_blacklist_id
-from refindery.domain.models import BlacklistKind
+from refindery.domain.models import BlacklistKind, Page, PageStatus
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
 
 if TYPE_CHECKING:
@@ -270,6 +270,38 @@ async def test_reconcile_enqueues_entity_jobs_lost_before_enqueue(harness):
     assert await container.indexing.reconcile_entity_jobs() == 1
     data = await _wait_for_entity_status(client, page_id, "done")
     assert data["status"] == "indexed"
+
+
+async def test_reconcile_skips_pages_without_content_hash(harness, monkeypatch):
+    _client, container = harness
+    now = container.clock.now()
+    page = Page(
+        id=PageId("page-without-hash"),
+        canonical_url="https://example.com/no-hash",
+        original_url="https://example.com/no-hash",
+        domain="example.com",
+        title=None,
+        body_text="body",
+        content_hash=None,
+        source="extension",
+        metadata=None,
+        first_seen_at=now,
+        last_seen_at=now,
+        visit_count=1,
+        indexed_at=now,
+        status=PageStatus.INDEXED,
+    )
+
+    async def missing_pages() -> list[Page]:
+        return [page]
+
+    monkeypatch.setattr(
+        container.store,
+        "indexed_pages_missing_entity_extraction",
+        missing_pages,
+    )
+
+    assert await container.indexing.reconcile_entity_jobs() == 0
 
 
 async def test_startup_continues_when_entity_reconcile_fails(tmp_path, monkeypatch):

@@ -206,6 +206,8 @@ class CompareService:
         if not enabled or self._reranker is None or not fused:
             return {}
         chunks = await self._store.get_chunks([hit.chunk_id for hit in fused])
+        if not chunks:
+            return {}
         scores = await self._reranker.rerank(
             query=query,
             candidates=[

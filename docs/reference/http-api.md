@@ -12,6 +12,8 @@ focuses on the retrieval and admin surface. `write`-scoped routes are marked �
 
 ```text
 POST   /v1/pages                      ingest (body_extracted XOR body_html; neither → fetch)  🔒
+POST   /v1/pages/batch                ingest up to 100 pages with per-item outcomes           🔒
+POST   /v1/pages/status/batch         status for up to 500 distinct page IDs
 GET    /v1/pages/{id}                 full body_text + metadata
 GET    /v1/pages/{id}/chunks          ordered chunk text, token counts, and body offsets
 GET    /v1/pages/{id}/status          queued | indexing | indexed | failed | dead
@@ -40,7 +42,7 @@ GET    /v1/admin/query-log            ?since=&limit=&kind=
 GET    /v1/admin/query-log/{query_id} full retrieval trace, timing, and feedback
 GET    /v1/admin/metrics/timeseries   ?metric=&since=&step=
 POST   /v1/admin/eval/score           offline ScoreReport
-POST   /v1/admin/eval/replay          enqueue live two-arm replay
+POST   /v1/admin/eval/replay          enqueue live two-arm replay (write-scoped)              🔒
 GET    /v1/admin/eval/replay/{job_id} poll durable ReplayReport
 GET    /v1/admin/config               effective settings with secrets redacted
 GET    /v1/admin/mcp                  mounted tool metadata
@@ -90,16 +92,18 @@ or canonical form.
   final hit sets plus per-stage timing and latest feedback. The list defaults to
   100 rows and caps `limit` at 1,000.
 - **Evaluation** — `/v1/admin/eval/score` is synchronous and read-only. Replay
-  returns `202 {job_id,result_url}`; poll the result URL until the job is
-  `done`, `failed`, or `dead`. Reports and failures survive process restarts.
+  needs a `write` scope (it may call paid providers) and returns
+  `202 {job_id,result_url}`; poll the result URL — read scope suffices — until
+  the job is `done`, `failed`, or `dead`. Reports and failures survive process
+  restarts.
 - **Jobs** — filter with `status` and/or `kind`; `status_filter` remains a
   deprecated compatibility alias and cannot be combined with `status`.
 
 ## Health
 
 - `GET /healthz` — liveness, unauthenticated.
-- `GET /readyz` — readiness, unauthenticated; `503` until the metadata store is
-  reachable and an embedding model is active.
+- `GET /readyz` — readiness and additive API capability flags, unauthenticated;
+  `503` until the metadata store is reachable and an embedding model is active.
 - `GET /metrics` — Prometheus, bearer required. See [Observability](../configuration/observability.md).
 
 ## Related

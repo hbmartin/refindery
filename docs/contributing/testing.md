@@ -46,3 +46,17 @@ run the conformance tests against both (Qdrant needs a running instance; see
   pagination at the final slice in `SearchService.search`, never in a store arm.
 
 Coverage has a floor in CI; keep new code covered.
+
+External-facing adapters use deterministic transport or SDK stubs in the pull
+request suite, including timeout, malformed-response, retry, and fallback paths.
+The scheduled `Real Extractor Models` workflow installs the optional spaCy and
+GLiNER models and treats upstream model regressions as blocking failures.
+
+LanceDB and Qdrant conformance run as separate CI jobs. The LanceDB job has no
+daemon configuration; the Qdrant job is selected explicitly against its service
+container, so neither adapter can silently stand in for the other.
+
+The `Security` workflow runs dependency auditing, CodeQL, and Gitleaks. Repository
+administrators should also enable GitHub secret scanning and push protection in
+the repository's code-security settings; those platform controls complement the
+versioned workflow gate.

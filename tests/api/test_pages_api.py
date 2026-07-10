@@ -150,6 +150,90 @@ async def test_blacklisted_url_403(harness):
     assert response.json() == {"error": "blacklisted", "pattern": "bank.com"}
 
 
+async def test_batch_ingest_preserves_order_and_isolates_item_failures(harness):
+    client, container = harness
+    await container.store.conn.execute(
+        "INSERT INTO blacklist (id, pattern, kind, reason, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            new_blacklist_id(),
+            "bank.com",
+            BlacklistKind.DOMAIN,
+            "test",
+            datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+        ),
+    )
+    await container.store.conn.commit()
+    duplicate = {**BODY, "url": "https://example.com/batch?utm_source=first"}
+    response = await client.post(
+        "/v1/pages/batch",
+        json={
+            "pages": [
+                duplicate,
+                {**BODY, "url": "not-a-url"},
+                {**BODY, "url": "https://secure.bank.com/statement"},
+                {**duplicate, "url": "https://example.com/batch?fbclid=second"},
+                {**BODY, "unexpected": True},
+            ]
+        },
+        headers=AUTH,
+    )
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert [item["index"] for item in results] == [0, 1, 2, 3, 4]
+    assert [item["outcome"] for item in results] == [
+        "accepted",
+        "rejected",
+        "blacklisted",
+        "revisit",
+        "rejected",
+    ]
+    assert results[3]["page_id"] == results[0]["page_id"]
+    assert results[2] == {
+        "index": 2,
+        "outcome": "blacklisted",
+        "error": "blacklisted",
+        "pattern": "bank.com",
+    }
+
+
+@pytest.mark.parametrize("pages", [[], [{}] * 101])
+async def test_batch_ingest_enforces_envelope_limits(client, pages):
+    response = await client.post("/v1/pages/batch", json={"pages": pages}, headers=AUTH)
+    assert response.status_code == 422
+
+
+async def test_batch_ingest_requires_write_auth(client):
+    assert (
+        await client.post("/v1/pages/batch", json={"pages": [BODY]})
+    ).status_code == 401
+
+
+async def test_batch_status_returns_found_and_missing_and_deduplicates(client):
+    ingest = await client.post("/v1/pages", json=BODY, headers=AUTH)
+    page_id = ingest.json()["page_id"]
+    response = await client.post(
+        "/v1/pages/status/batch",
+        json={"page_ids": [page_id, "missing", page_id]},
+        headers=AUTH,
+    )
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert [item["page_id"] for item in results] == [page_id, "missing"]
+    assert results[0]["found"] is True
+    assert results[0]["status"] in {"queued", "indexing", "indexed"}
+    assert "features" in results[0]
+    assert results[1] == {"page_id": "missing", "found": False}
+
+
+@pytest.mark.parametrize("page_ids", [[], [f"page-{index}" for index in range(501)]])
+async def test_batch_status_enforces_envelope_limits(client, page_ids):
+    response = await client.post(
+        "/v1/pages/status/batch", json={"page_ids": page_ids}, headers=AUTH
+    )
+    assert response.status_code == 422
+
+
 async def test_body_html_ingest_uses_extractor(client):
     payload = {
         "url": "https://example.com/html-page",
@@ -170,7 +254,12 @@ async def test_unknown_page_404(client):
 
 async def test_health_endpoints(client):
     assert (await client.get("/healthz")).status_code == 200
-    assert (await client.get("/readyz")).status_code == 200
+    ready = await client.get("/readyz")
+    assert ready.status_code == 200
+    assert ready.json()["capabilities"] == {
+        "batch_ingest": True,
+        "batch_status": True,
+    }
 
 
 async def test_indexed_page_is_searchable_in_vector_store(harness):

@@ -41,6 +41,17 @@ async def test_follows_redirects_and_reports_final_url(httpx_mock):
     assert result.body == b"moved"
 
 
+async def test_redirect_loop_maps_to_fetch_failed(httpx_mock):
+    httpx_mock.add_response(
+        url=URL,
+        status_code=302,
+        headers={"location": URL},
+        is_reusable=True,
+    )
+    with pytest.raises(FetchFailedError, match="TooManyRedirects"):
+        await HttpFetcher().fetch(URL)
+
+
 async def test_non_2xx_maps_to_fetch_failed(httpx_mock):
     httpx_mock.add_response(url=URL, status_code=404)
     with pytest.raises(FetchFailedError, match="404"):

@@ -39,6 +39,11 @@ class _StubExtractor:
         self.closed = True
 
 
+class _AsyncCloseExtractor(_StubExtractor):
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 def _mention(surface: str) -> Mention:
     return Mention(
         surface_form=surface,
@@ -54,6 +59,13 @@ async def test_first_healthy_extractor_wins():
     result = await ChainExtractor([first, second]).extract("text")
     assert [m.surface_form for m in result] == ["Ada"]
     assert second.calls == 0
+
+
+def test_chain_is_healthy_when_any_link_is_healthy():
+    assert ChainExtractor(
+        [_StubExtractor(healthy=False), _StubExtractor(healthy=True)]
+    ).health_check()
+    assert not ChainExtractor([_StubExtractor(healthy=False)]).health_check()
 
 
 async def test_unhealthy_links_are_skipped():
@@ -80,7 +92,7 @@ async def test_empty_when_every_link_fails():
 
 
 async def test_aclose_calls_close_hooks():
-    first = _StubExtractor()
+    first = _AsyncCloseExtractor()
     second = _StubExtractor()
     await ChainExtractor([first, second]).aclose()
     assert first.closed
@@ -142,6 +154,47 @@ def test_canary_fails_when_predict_crashes(monkeypatch):
     assert GlinerExtractor().health_check() is False
 
 
+def test_gliner_import_failure_is_unhealthy(monkeypatch):
+    monkeypatch.setitem(sys.modules, "gliner", types.ModuleType("gliner"))
+    assert GlinerExtractor().health_check() is False
+
+
+def test_gliner_onnx_load_failure_falls_back(monkeypatch):
+    class _FakeModel:
+        def predict_entities(self, text, labels, threshold) -> list[dict]:  # noqa: ARG002
+            return _HEALTHY_PREDICTIONS
+
+    class _FakeGLiNER:
+        calls = 0
+
+        @classmethod
+        def from_pretrained(cls, model, **_kwargs) -> _FakeModel:  # noqa: ARG003
+            cls.calls += 1
+            if cls.calls == 1:
+                msg = "ONNX unavailable"
+                raise OSError(msg)
+            return _FakeModel()
+
+    module = types.ModuleType("gliner")
+    module.__dict__["GLiNER"] = _FakeGLiNER
+    monkeypatch.setitem(sys.modules, "gliner", module)
+    assert GlinerExtractor().health_check() is True
+    assert _FakeGLiNER.calls == 2
+
+
+def test_gliner_all_load_paths_failing_is_unhealthy(monkeypatch):
+    class _FakeGLiNER:
+        @staticmethod
+        def from_pretrained(_model, **_kwargs) -> None:
+            msg = "model unavailable"
+            raise OSError(msg)
+
+    module = types.ModuleType("gliner")
+    module.__dict__["GLiNER"] = _FakeGLiNER
+    monkeypatch.setitem(sys.modules, "gliner", module)
+    assert GlinerExtractor().health_check() is False
+
+
 async def test_extract_maps_predictions_to_mentions(monkeypatch):
     _install_fake_gliner(monkeypatch, _HEALTHY_PREDICTIONS)
     mentions = await GlinerExtractor().extract("Guido van Rossum created Python.")
@@ -149,6 +202,33 @@ async def test_extract_maps_predictions_to_mentions(monkeypatch):
         ("Guido van Rossum", 0, 16),
         ("Python", 25, 31),
     ]
+
+
+async def test_gliner_inference_error_falls_through_to_spacy(monkeypatch):
+    class _CanaryThenFailModel:
+        calls = 0
+
+        def predict_entities(self, text, labels, threshold) -> list[dict]:  # noqa: ARG002
+            self.calls += 1
+            if self.calls == 1:
+                return _HEALTHY_PREDICTIONS
+            msg = "inference failed"
+            raise RuntimeError(msg)
+
+    class _FakeGLiNER:
+        @staticmethod
+        def from_pretrained(_model, **_kwargs) -> _CanaryThenFailModel:
+            return _CanaryThenFailModel()
+
+    gliner_module = types.ModuleType("gliner")
+    gliner_module.__dict__["GLiNER"] = _FakeGLiNER
+    monkeypatch.setitem(sys.modules, "gliner", gliner_module)
+    _install_fake_spacy(monkeypatch, [_ent("PERSON", "Ada")])
+
+    mentions = await ChainExtractor([GlinerExtractor(), SpacyExtractor()]).extract(
+        "Ada"
+    )
+    assert [mention.surface_form for mention in mentions] == ["Ada"]
 
 
 # -- spaCy label mapping ------------------------------------------------------

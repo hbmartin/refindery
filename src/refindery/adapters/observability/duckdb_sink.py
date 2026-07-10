@@ -11,6 +11,7 @@ query path.
 import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,24 @@ logger = logging.getLogger(__name__)
 _SENTINEL = None
 _BATCH_MAX = 256
 _POLL_S = 0.25
+_READ_RETRIES = 20
+_READ_BACKOFF_S = 0.025
+
+
+def open_read_only(path: Path) -> duckdb.DuckDBPyConnection:
+    """Open the sink file read-only, waiting for an in-progress batch to checkpoint.
+
+    The sink opens its write connection per batch and CHECKPOINTs on close, so a
+    reader only has to retry across the brief window a batch holds the file.
+    """
+    for attempt in range(_READ_RETRIES):
+        try:
+            return duckdb.connect(str(path), read_only=True)
+        except duckdb.ConnectionException:
+            if attempt == _READ_RETRIES - 1:
+                raise
+            time.sleep(_READ_BACKOFF_S)
+    raise AssertionError("unreachable")
 
 
 @dataclass(frozen=True, slots=True)

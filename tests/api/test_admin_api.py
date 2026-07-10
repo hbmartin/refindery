@@ -90,10 +90,15 @@ async def test_query_log_jobs_and_openapi_contract(admin_harness):
 async def test_replay_is_accepted_and_unknown_resources_are_404(admin_harness):
     """Replay submission is durable and missing detail resources are explicit."""
     client, _, _ = admin_harness
+    replay_body = {"rerank_a": False, "rerank_b": True, "k": 5, "candidates": 20}
+    read_only = await client.post(
+        "/v1/admin/eval/replay", json=replay_body, headers=READ
+    )
+    assert read_only.status_code == 403
     accepted = await client.post(
         "/v1/admin/eval/replay",
-        json={"rerank_a": False, "rerank_b": True, "k": 5, "candidates": 20},
-        headers=READ,
+        json=replay_body,
+        headers=FULL,
     )
     assert accepted.status_code == 202
     assert accepted.json()["result_url"].endswith(accepted.json()["job_id"])

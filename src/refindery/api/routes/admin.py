@@ -21,7 +21,7 @@ from refindery.adapters.observability.query_log_reader import (
     DetailedLoggedRun,
     DuckDbQueryLogReader,
 )
-from refindery.api.auth import Principal, require_read
+from refindery.api.auth import Principal, require_read, require_write
 from refindery.api.deps import get_container
 from refindery.application.container import Container
 from refindery.application.services.eval_service import EvalService, ScoreReport
@@ -239,6 +239,7 @@ async def eval_score(
     operation_id="admin_eval_replay",
     summary="Enqueue a live eval replay",
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_write)],
 )
 async def eval_replay(
     body: EvalReplayRequest,

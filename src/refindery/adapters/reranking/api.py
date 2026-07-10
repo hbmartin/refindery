@@ -7,12 +7,32 @@ and load lazily (LocalReranker) when installed.
 import asyncio
 import os
 
+from pydantic import BaseModel, ConfigDict
 from rerankers import Reranker as RerankersFactory
 
 from refindery.application.ports.reranker import RerankCandidate, RerankScore
 from refindery.domain.ids import ChunkId
 
 _KEY_ENV = {"cohere": "COHERE_API_KEY", "voyage": "VOYAGE_API_KEY"}
+
+
+class _RankedDocument(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    doc_id: str
+
+
+class _RankedResult(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    document: _RankedDocument
+    score: float | None
+
+
+class _RankedResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    results: list[_RankedResult]
 
 
 class ApiReranker:
@@ -46,10 +66,11 @@ class ApiReranker:
             docs=[c.text for c in candidates],
             doc_ids=[str(c.chunk_id) for c in candidates],
         )
+        parsed = _RankedResponse.model_validate(ranked)
         return [
             RerankScore(
                 chunk_id=ChunkId(str(result.document.doc_id)),
                 score=0.0 if result.score is None else float(result.score),
             )
-            for result in ranked.results
+            for result in parsed.results
         ]

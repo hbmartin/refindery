@@ -7,10 +7,19 @@ against ``dim`` on every call.
 
 import numpy as np
 from catsu import Client
+from pydantic import BaseModel, ConfigDict
 
 from refindery.domain.rollup import Vector
 
 _PROVIDER_ALIASES = {"voyage": "voyageai"}
+
+
+class _EmbeddingResponse(BaseModel):
+    """Validated subset of catsu's provider response."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    embeddings: list[list[float]]
 
 
 class EmbeddingDimensionMismatchError(RuntimeError):
@@ -73,7 +82,14 @@ class CatsuEmbedder:
             provider=self._provider,
             input_type=input_type,
         )
-        vectors = [np.asarray(row, dtype=np.float32) for row in response.embeddings]
+        parsed = _EmbeddingResponse.model_validate(response)
+        if len(parsed.embeddings) != len(texts):
+            msg = (
+                f"model {self._model_id!r} returned {len(parsed.embeddings)} vectors "
+                f"for {len(texts)} inputs"
+            )
+            raise RuntimeError(msg)
+        vectors = [np.asarray(row, dtype=np.float32) for row in parsed.embeddings]
         for vector in vectors:
             if vector.shape != (self._dim,):
                 raise EmbeddingDimensionMismatchError(

@@ -1,7 +1,7 @@
 """Pydantic request/response models for the HTTP surface."""
 
 from datetime import datetime
-from typing import Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     AwareDatetime,
@@ -61,6 +61,62 @@ class BlacklistedResponse(BaseModel):
     pattern: str
 
 
+class IngestBatchRequest(BaseModel):
+    """POST /v1/pages/batch envelope.
+
+    Items remain unvalidated here so one malformed page does not reject the
+    otherwise valid envelope. The route validates each item independently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pages: list[Any] = Field(min_length=1, max_length=100)
+
+
+class IngestBatchAcceptedResult(IngestAcceptedResponse):
+    """A newly queued item in an ingest batch."""
+
+    index: int
+    outcome: Literal["accepted"] = "accepted"
+
+
+class IngestBatchRevisitResult(IngestRevisitResponse):
+    """A revisit item in an ingest batch."""
+
+    index: int
+    outcome: Literal["revisit"] = "revisit"
+
+
+class IngestBatchBlacklistedResult(BlacklistedResponse):
+    """A blacklisted item in an ingest batch."""
+
+    index: int
+    outcome: Literal["blacklisted"] = "blacklisted"
+
+
+class IngestBatchRejectedResult(BaseModel):
+    """An independently invalid item in an ingest batch."""
+
+    index: int
+    outcome: Literal["rejected"] = "rejected"
+    detail: str
+
+
+IngestBatchResult = Annotated[
+    IngestBatchAcceptedResult
+    | IngestBatchRevisitResult
+    | IngestBatchBlacklistedResult
+    | IngestBatchRejectedResult,
+    Field(discriminator="outcome"),
+]
+
+
+class IngestBatchResponse(BaseModel):
+    """POST /v1/pages/batch response in input order."""
+
+    results: list[IngestBatchResult]
+
+
 class PageResponse(BaseModel):
     """GET /v1/pages/{id}."""
 
@@ -117,6 +173,39 @@ class PageStatusResponse(BaseModel):
     status: PageStatus
     last_error: str | None = None
     features: PageStatusFeatures | None = None
+
+
+class PageStatusBatchRequest(BaseModel):
+    """POST /v1/pages/status/batch envelope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    page_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class PageStatusBatchFoundResult(PageStatusResponse):
+    """Status for a page known to the server."""
+
+    found: Literal[True] = True
+
+
+class PageStatusBatchMissingResult(BaseModel):
+    """Status result for an unknown or expired page id."""
+
+    page_id: str
+    found: Literal[False] = False
+
+
+PageStatusBatchResult = Annotated[
+    PageStatusBatchFoundResult | PageStatusBatchMissingResult,
+    Field(discriminator="found"),
+]
+
+
+class PageStatusBatchResponse(BaseModel):
+    """POST /v1/pages/status/batch response."""
+
+    results: list[PageStatusBatchResult]
 
 
 class JobResponse(BaseModel):

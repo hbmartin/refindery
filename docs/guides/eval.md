@@ -56,9 +56,10 @@ without perturbing production state.
 
 For the web UI, `POST /v1/admin/eval/replay` enqueues the same live work in the
 durable job ledger. Its response contains a `result_url`; polling that URL
-returns the job state and, when complete, the `ReplayReport`. Unlike the CLI,
-this path may call paid providers while authenticated with a read-scoped token.
-Completed reports and terminal errors are stored in SQLite and survive restart.
+returns the job state and, when complete, the `ReplayReport`. Because this path
+may call paid providers, it requires a **`write`**-scoped token even though the
+poll and every other admin read only needs `read`. Completed reports and
+terminal errors are stored in SQLite and survive restart.
 
 `GET /v1/admin/query-log` and `/v1/admin/query-log/{query_id}` expose the logged
 substrate for the Search Lab, including all retrieval arms, final pages,

@@ -41,7 +41,36 @@ configurations (models or rerank on/off) over the same golden set.
 
 ## Quickstart
 
-### Minimal profile (no Docker)
+### macOS one-stop setup (Homebrew, no Docker)
+
+Run the idempotent setup script from the repository root. It installs Homebrew
+when needed, then installs Python 3.13 and `uv`, syncs the locked dependencies,
+and writes a private `.env` with a generated auth token and the daemon-free
+LanceDB profile. The default Voyage embedding model requires an API key; the
+script reads it without echoing it and also configures Voyage reranking so one
+key covers both services.
+
+```bash
+./scripts/setup-macos.sh
+```
+
+For a non-interactive setup, pass the key through the environment. Add
+`--start` to launch Refindery after setup completes.
+
+```bash
+VOYAGE_API_KEY=... ./scripts/setup-macos.sh --start
+```
+
+On later runs, start the server with the generated environment:
+
+```bash
+uv run --env-file .env refindery serve
+```
+
+Use `--skip-api-key` when you only want to prepare the development environment;
+indexing will remain unavailable until a provider key is configured.
+
+### Manual minimal profile (no Docker)
 
 ```bash
 uv sync --extra ner

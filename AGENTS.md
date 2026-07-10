@@ -50,3 +50,6 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
 - Exclude paginated rows (`offset > 0`) from rerank-lift eligibility: an offset
   slice cannot see earlier pages, so final-vs-pool nDCG no longer isolates
   reranking and lift skews negative.
+- Keep macOS local setup daemon-free with LanceDB, install Python and `uv`
+  through Homebrew, and launch with `uv run --env-file .env` so native provider
+  keys in the ignored `.env` reach their SDKs.

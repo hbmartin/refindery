@@ -99,6 +99,19 @@ class TestTokenSettings:
         assert spec.token.get_secret_value() == "sekrit"
         assert spec.scopes == (Scope.READ,)
 
+    def test_native_provider_key_allowed_in_dotenv(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("REFINDERY_AUTH_TOKEN", raising=False)
+        monkeypatch.delenv("REFINDERY_AUTH_TOKENS", raising=False)
+        (tmp_path / ".env").write_text(
+            "REFINDERY_AUTH_TOKEN=sekrit\nVOYAGE_API_KEY=provider-key\n"
+        )
+
+        settings = Settings()
+
+        assert settings.auth_token is not None
+        assert settings.auth_token.get_secret_value() == "sekrit"
+
 
 class TestTokenRegistry:
     def test_resolves_by_secret(self):

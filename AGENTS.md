@@ -53,3 +53,9 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
 - Keep macOS local setup daemon-free with LanceDB, install Python and `uv`
   through Homebrew, and launch with `uv run --env-file .env` so native provider
   keys in the ignored `.env` reach their SDKs.
+- Treat entity extractor chains as ordered fallbacks rather than ensembles; the
+  first healthy extractor handles a page, with later extractors used only after
+  a per-call failure.
+- Keep fully containerized macOS settings in `.env.docker` and always pass it
+  with `docker compose --env-file .env.docker`; this avoids overwriting the
+  daemon-free host profile in `.env`.

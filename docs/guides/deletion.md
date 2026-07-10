@@ -45,6 +45,6 @@ DELETE /v1/blacklist/{id}     remove a rule (un-blacklist; does not restore cont
 
 ## Related
 
-- [Upstream ingest API](../reference/upstream-ingest-api.md#post-v1forget--purge--blacklist) — full contract and the `403` blacklisted response.
+- [Upstream ingest API](../reference/upstream-ingest-api.md#removing-content-post-v1forget--purge--blacklist) — full contract and the `403` blacklisted response.
 - [Ingesting pages](ingest.md) — where the blacklist check happens.
 - [Operations](../operations/index.md) — tombstone reconciliation and lease model.

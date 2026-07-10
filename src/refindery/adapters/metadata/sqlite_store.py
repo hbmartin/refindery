@@ -1377,6 +1377,16 @@ class SqliteMetadataStore(_EntityClusterMixin):
         rows = await cursor.fetchall()
         return [_job_from_row(row) for row in rows]
 
+    async def list_expired_running_jobs(self, *, now: datetime) -> list[Job]:
+        """Return running jobs whose lease expired (read-only; watchdog telemetry)."""
+        cursor = await self.conn.execute(
+            f"SELECT {_JOB_COLUMNS} FROM jobs "  # noqa: S608
+            "WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ?",
+            (JobStatus.RUNNING, _ts(now)),
+        )
+        rows = await cursor.fetchall()
+        return [_job_from_row(row) for row in rows]
+
     # -- forget / blacklist -----------------------------------------------------
 
     async def purge_and_blacklist(

@@ -10,6 +10,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
+from refindery.adapters.observability.metrics import rerank_degraded_total
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.query_log import (
@@ -54,6 +55,19 @@ logger = logging.getLogger(__name__)
 _BARE_DOMAIN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9-]+)+$")
 _EXACT_MATCH_SCORE = 1.0
 _MAX_ENTITY_PAGES = 10_000
+
+
+def _fusion_only(fused: list[ChunkHit]) -> list[ScoredChunk]:
+    """Score chunks by fusion alone (no reranker, or reranking failed)."""
+    return [
+        ScoredChunk(
+            chunk_id=hit.chunk_id,
+            page_id=hit.page_id,
+            ordinal=hit.ordinal,
+            fusion_score=hit.score,
+        )
+        for hit in fused
+    ]
 
 
 class EntityFilterTooBroadError(RefinderyError):
@@ -114,6 +128,26 @@ class SearchResultPage:
     chunks: tuple[tuple[Chunk, float], ...]
     exact_match: bool = False
     cluster: ClusterRef | None = None
+
+
+def _exact_match_results(
+    exact_pages: list[PageId],
+    *,
+    by_id: dict[PageId, Page],
+    cluster_refs: dict[PageId, ClusterRef],
+) -> list[SearchResultPage]:
+    """Pin exact URL/domain matches at rank 1."""
+    return [
+        SearchResultPage(
+            page=page,
+            score=_EXACT_MATCH_SCORE,
+            chunks=(),
+            exact_match=True,
+            cluster=cluster_refs.get(page.id),
+        )
+        for page_id in exact_pages
+        if (page := by_id.get(page_id)) is not None
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,24 +351,23 @@ class SearchService:
     ) -> list[ScoredChunk]:
         fusion_scores = {hit.chunk_id: hit for hit in fused}
         if not request.rerank or self._reranker is None or not fused:
-            return [
-                ScoredChunk(
-                    chunk_id=hit.chunk_id,
-                    page_id=hit.page_id,
-                    ordinal=hit.ordinal,
-                    fusion_score=hit.score,
-                )
-                for hit in fused
-            ]
+            return _fusion_only(fused)
         chunks = await self._store.get_chunks([hit.chunk_id for hit in fused])
-        with timer.stage("rerank"):
-            scores = await self._reranker.rerank(
-                query=request.query,
-                candidates=[
-                    RerankCandidate(chunk_id=chunk.id, text=chunk.text)
-                    for chunk in chunks
-                ],
+        try:
+            with timer.stage("rerank"):
+                scores = await self._reranker.rerank(
+                    query=request.query,
+                    candidates=[
+                        RerankCandidate(chunk_id=chunk.id, text=chunk.text)
+                        for chunk in chunks
+                    ],
+                )
+        except Exception:  # noqa: BLE001 — degrade to fusion-only ranking
+            logger.warning(
+                "reranker failed; serving fusion-only ranking", exc_info=True
             )
+            rerank_degraded_total.inc()
+            return _fusion_only(fused)
         rerank_by_id = {score.chunk_id: score.score for score in scores}
         return [
             ScoredChunk(
@@ -379,21 +412,19 @@ class SearchService:
                     half_life_days=recency_half_life_days,
                 )
 
-            results: list[SearchResultPage] = []
-            seen: set[PageId] = set()
-            for page_id in exact_pages:
-                if (page := by_id.get(page_id)) is not None:
-                    results.append(
-                        SearchResultPage(
-                            page=page,
-                            score=_EXACT_MATCH_SCORE,
-                            chunks=(),
-                            exact_match=True,
-                            cluster=cluster_refs.get(page.id),
-                        )
-                    )
-                    seen.add(page_id)
+            results = _exact_match_results(
+                exact_pages, by_id=by_id, cluster_refs=cluster_refs
+            )
+            seen: set[PageId] = {result.page.id for result in results}
 
+            chunk_rows = await self._store.get_chunks(
+                [
+                    chunk.chunk_id
+                    for page_score in pages
+                    for chunk in page_score.chunks[: request.chunks_per_page]
+                ]
+            )
+            chunk_by_id = {chunk.id: chunk for chunk in chunk_rows}
             for page_score in pages:
                 if page_score.page_id in seen:
                     continue
@@ -405,10 +436,6 @@ class SearchService:
                     )
                     continue
                 top_chunks = page_score.chunks[: request.chunks_per_page]
-                chunk_rows = await self._store.get_chunks(
-                    [chunk.chunk_id for chunk in top_chunks]
-                )
-                chunk_by_id = {chunk.id: chunk for chunk in chunk_rows}
                 results.append(
                     SearchResultPage(
                         page=page,

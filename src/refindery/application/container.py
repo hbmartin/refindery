@@ -4,6 +4,7 @@ Tests build a Container with fakes; production uses ``build_container``.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from inspect import isawaitable
 from typing import TYPE_CHECKING
@@ -19,8 +20,12 @@ from refindery.adapters.extractors.gazetteer import GazetteerExtractor
 from refindery.adapters.llm.openai_compat import OpenAiCompatClient
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
+from refindery.adapters.observability.metrics import jobs_lease_expired
 from refindery.adapters.observability.query_log import DuckDbQueryLog
 from refindery.adapters.queue.huey_queue import HueyJobQueue
+from refindery.adapters.resilience.circuit_breaker import BreakerConfig, BreakerRegistry
+from refindery.adapters.resilience.retry import RetryPolicy
+from refindery.adapters.resilience.wrappers import ResilientEmbedder, ResilientReranker
 from refindery.application.ports.chunker import Chunker
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.content_extractor import ContentExtractor, Fetcher
@@ -88,8 +93,9 @@ class Container:
     async def startup(self) -> None:
         """Connect, migrate, sync registry, recover jobs, start the consumer."""
         logger.warning(
-            "job execution is lease-only; long-running jobs are retried only after "
-            "lease recovery, not interrupted at timeout"
+            "jobs are cooperatively cancelled at lease expiry; a handler blocked "
+            "in native or thread code frees the worker but may leak a thread "
+            "until it returns"
         )
         logger.warning(
             "query logs retain raw query text and hit ids in %s until manually purged",
@@ -201,7 +207,9 @@ def _build_vector_store(settings: Settings) -> VectorStore:
             raise ConfigurationError(msg)
 
 
-def _build_extractor(settings: Settings) -> EntityExtractor:
+def _build_extractor(
+    settings: Settings, *, breakers: BreakerRegistry | None = None
+) -> EntityExtractor:
     """Build the configured extractor chain; startup fails when none are healthy."""
     links: list[EntityExtractor] = []
     attempted: list[str] = []
@@ -232,7 +240,7 @@ def _build_extractor(settings: Settings) -> EntityExtractor:
                     LlmExtractor,
                 )
 
-                links.append(LlmExtractor(_build_llm(settings)))
+                links.append(LlmExtractor(_build_llm(settings, breakers=breakers)))
             case _:
                 logger.warning("unknown entity extractor configured: %s", name)
     healthy = [link for link in links if link.health_check()]
@@ -248,7 +256,9 @@ def _build_extractor(settings: Settings) -> EntityExtractor:
     return ChainExtractor(healthy)
 
 
-def _build_llm(settings: Settings) -> OpenAiCompatClient | None:
+def _build_llm(
+    settings: Settings, *, breakers: BreakerRegistry | None = None
+) -> OpenAiCompatClient | None:
     if settings.llm.base_url is None:
         return None
     api_key = settings.llm.api_key
@@ -256,6 +266,61 @@ def _build_llm(settings: Settings) -> OpenAiCompatClient | None:
         base_url=settings.llm.base_url,
         model=settings.llm.model,
         api_key=None if api_key is None else api_key.get_secret_value(),
+        timeout_s=settings.llm.timeout_s,
+        breaker=(
+            None if breakers is None else breakers.get(f"llm:{settings.llm.base_url}")
+        ),
+        retry=_retry_policy(settings),
+    )
+
+
+def _retry_policy(settings: Settings) -> RetryPolicy:
+    resilience = settings.resilience
+    return RetryPolicy(
+        attempts=resilience.retry_attempts,
+        base_delay_s=resilience.retry_base_delay_s,
+        max_delay_s=resilience.retry_max_delay_s,
+    )
+
+
+def _make_embedder_factory(
+    settings: Settings, *, breakers: BreakerRegistry
+) -> Callable[[EmbeddingModel], Embedder]:
+    retry_policy = _retry_policy(settings)
+
+    def factory(model: EmbeddingModel) -> Embedder:
+        return ResilientEmbedder(
+            inner=default_embedder_factory(model),
+            breaker=breakers.get(f"embed:{model.provider}"),
+            policy=retry_policy,
+            timeout_s=settings.resilience.embed_timeout_s,
+            provider=model.provider,
+        )
+
+    return factory
+
+
+def _register_lease_watchdog(
+    *, queue: HueyJobQueue, store: MetadataStore, clock: Clock
+) -> None:
+    from huey import crontab  # noqa: PLC0415 — scheduling detail
+
+    async def _lease_watchdog() -> None:
+        # Observe-only: re-enqueueing while the process lives could run a job
+        # concurrently with its zombie thread (single-writer invariant);
+        # startup recover() remains the only re-enqueue path.
+        expired = await store.list_expired_running_jobs(now=clock.now())
+        jobs_lease_expired.set(len(expired))
+        for job in expired:
+            logger.warning(
+                "job %s (%s) is RUNNING past its lease (%s)",
+                job.id,
+                job.kind,
+                job.lease_until,
+            )
+
+    queue.register_periodic(
+        name="lease_watchdog", schedule=crontab(minute="*"), handler=_lease_watchdog
     )
 
 
@@ -321,6 +386,13 @@ def _build_extractors() -> list[ContentExtractor]:
 def build_container(settings: Settings) -> Container:
     """Wire production adapters and services."""
     clock = SystemClock()
+    breakers = BreakerRegistry(
+        config=BreakerConfig(
+            failure_threshold=settings.resilience.breaker_failure_threshold,
+            cooldown_s=settings.resilience.breaker_cooldown_s,
+        ),
+        clock=clock,
+    )
     store = SqliteMetadataStore(settings.sqlite.path)
     vector_store = _build_vector_store(settings)
     chunker = ChonkieChunker(
@@ -336,7 +408,7 @@ def build_container(settings: Settings) -> Container:
         store=store,
         vector_store=vector_store,
         clock=clock,
-        embedder_factory=default_embedder_factory,
+        embedder_factory=_make_embedder_factory(settings, breakers=breakers),
         chunk_hard_max=settings.chunking.hard_max_tokens,
     )
     indexing = IndexingService(
@@ -372,7 +444,14 @@ def build_container(settings: Settings) -> Container:
     )
     sink = DuckDbSink(settings.duckdb.path)
     query_log = DuckDbQueryLog(sink)
-    reranker = _build_reranker(settings)
+    reranker: Reranker | None = _build_reranker(settings)
+    if reranker is not None:
+        reranker = ResilientReranker(
+            inner=reranker,
+            breaker=breakers.get(f"rerank:{settings.reranker.provider}"),
+            policy=_retry_policy(settings),
+            timeout_s=settings.resilience.rerank_timeout_s,
+        )
     similarity = SimilarityService(store=store)
     search = SearchService(
         store=store,
@@ -408,7 +487,7 @@ def build_container(settings: Settings) -> Container:
     )
     entity_ingest = EntityIngestService(
         store=store,
-        extractor=_build_extractor(settings),
+        extractor=_build_extractor(settings, breakers=breakers),
         canonicalization=canonicalization,
     )
     queue.add_handler(
@@ -421,7 +500,7 @@ def build_container(settings: Settings) -> Container:
         clock=clock,
         canonicalization=canonicalization,
         settings=settings.cluster,
-        labeler=_build_llm(settings),
+        labeler=_build_llm(settings, breakers=breakers),
     )
     idle_detector = IdleDetector(store=store, clock=clock, settings=settings.cluster)
     queue.add_handler(JobKind.CLUSTER, clustering.handle_cluster_job)
@@ -451,6 +530,7 @@ def build_container(settings: Settings) -> Container:
         schedule=crontab(minute="*/10"),
         handler=forget.verify_tombstones,
     )
+    _register_lease_watchdog(queue=queue, store=store, clock=clock)
 
     async def _idle_tick() -> None:
         if await idle_detector.should_run():

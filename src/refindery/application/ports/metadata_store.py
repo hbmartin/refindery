@@ -230,6 +230,10 @@ class MetadataStore(Protocol):
         """All pending ledger rows (startup recovery re-enqueues them)."""
         ...
 
+    async def list_expired_running_jobs(self, *, now: datetime) -> list[Job]:
+        """Return running jobs whose lease expired (read-only; watchdog telemetry)."""
+        ...
+
     # -- blacklist & forget -----------------------------------------------------
 
     async def find_blacklist_match(

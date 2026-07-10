@@ -15,7 +15,8 @@ knobs to revisit as a collection grows. All are environment variables — see th
 | `REFINDERY_FETCH__TIMEOUT_S` | `10.0` | Outbound fetch timeout. |
 | `REFINDERY_FETCH__MAX_BYTES` | `10000000` | Maximum fetched response size. |
 | `REFINDERY_JOBS__MAX_ATTEMPTS` | `5` | Attempts before a job becomes dead. |
-| `REFINDERY_JOBS__LEASE_MINUTES` | `15` | Recovery lease for in-flight work. |
+| `REFINDERY_JOBS__LEASE_MINUTES` | `15` | Recovery lease for in-flight work; handlers are cancelled at expiry. |
+| `REFINDERY_JOBS__HANDLER_TIMEOUT_S` | *(lease)* | Override the handler cancellation timeout. |
 | `REFINDERY_CLUSTER__MIN_PAGES` | `50` | Pages required for the first cluster run. |
 | `REFINDERY_CLUSTER__MIN_NEW_PAGES` | `20` | New pages required for an idle-triggered run. |
 | `REFINDERY_SEARCH__RECENCY_HALF_LIFE_DAYS` | *(unset)* | Optional ranking decay toward recent pages. |
@@ -37,6 +38,23 @@ REFINDERY_RERANKER__KIND=none
 
 Otherwise choose an API reranker (Cohere, Voyage) or a local cross-encoder via
 `REFINDERY_RERANKER__*`. See [Searching](../guides/search.md#the-pipeline).
+
+## Provider resilience
+
+External provider calls (embedding, reranking, LLM) run behind a
+per-provider circuit breaker with in-call retry — see
+[Operations](../operations/index.md#provider-resilience):
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `REFINDERY_RESILIENCE__BREAKER_FAILURE_THRESHOLD` | `5` | Consecutive failures before a breaker opens. |
+| `REFINDERY_RESILIENCE__BREAKER_COOLDOWN_S` | `30.0` | Fast-fail window before a probe is admitted. |
+| `REFINDERY_RESILIENCE__RETRY_ATTEMPTS` | `3` | In-call attempts per provider call. |
+| `REFINDERY_RESILIENCE__RETRY_BASE_DELAY_S` | `0.25` | First retry backoff. |
+| `REFINDERY_RESILIENCE__RETRY_MAX_DELAY_S` | `2.0` | Retry backoff cap. |
+| `REFINDERY_RESILIENCE__EMBED_TIMEOUT_S` | `60.0` | Per-attempt embedding timeout. |
+| `REFINDERY_RESILIENCE__RERANK_TIMEOUT_S` | `15.0` | Per-attempt rerank timeout. |
+| `REFINDERY_LLM__TIMEOUT_S` | `30.0` | Per-attempt LLM completion timeout. |
 
 ## Clustering schedule
 

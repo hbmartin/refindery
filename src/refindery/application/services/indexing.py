@@ -157,12 +157,14 @@ class IndexingService:
             return
 
         models = await self._registry.indexable_models()
-        vectors_by_model: dict[str, list[Vector]] = {}
-        for model in models:
-            embedder = self._registry.embedder_for(model)
-            vectors_by_model[model.id] = await embedder.embed_documents(
-                [chunk.text for chunk in chunks]
-            )
+        texts = [chunk.text for chunk in chunks]
+        embedders = [self._registry.embedder_for(model) for model in models]
+        embedded = await asyncio.gather(
+            *(embedder.embed_documents(texts) for embedder in embedders)
+        )
+        vectors_by_model: dict[str, list[Vector]] = {
+            model.id: vectors for model, vectors in zip(models, embedded, strict=True)
+        }
 
         points = [
             ChunkPoint(

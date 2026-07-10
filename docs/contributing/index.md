@@ -22,6 +22,8 @@ uv run ruff check .
 uv run ty check src tests
 uv run pyrefly check src tests
 uv run pytest
+uv run lizard src -C 15
+uv run zensical build --clean --strict
 ```
 
 Tests needing a running Qdrant are marked `qdrant` and skipped unless

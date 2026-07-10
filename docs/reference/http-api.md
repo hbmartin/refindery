@@ -10,7 +10,7 @@ focuses on the retrieval and admin surface. `write`-scoped routes are marked �
 
 ## Endpoint map
 
-```
+```text
 POST   /v1/pages                      ingest (body_extracted XOR body_html; neither → fetch)  🔒
 GET    /v1/pages/{id}                 full body_text + metadata
 GET    /v1/pages/{id}/status          queued | indexing | indexed | failed | dead

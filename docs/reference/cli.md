@@ -4,7 +4,7 @@ Refindery ships a single console entry point, `refindery` (also
 `python -m refindery`). With no subcommand it serves the API, so
 `python -m refindery` keeps working.
 
-```
+```text
 refindery serve
 refindery eval score  [options]
 refindery eval replay [options]

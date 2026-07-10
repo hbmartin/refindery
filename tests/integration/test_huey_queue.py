@@ -7,21 +7,30 @@ the ledger; exhausted jobs dead-letter; recovery re-enqueues.
 
 import asyncio
 import threading
+from collections.abc import AsyncIterator, Mapping
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
-from refindery.adapters.queue.huey_queue import HueyJobQueue
+from refindery.adapters.queue.huey_queue import (
+    DeadJobCallback,
+    HueyJobQueue,
+    JobHandler,
+)
+from refindery.application.ports.clock import Clock
 from refindery.config import JobsSettings
-from refindery.domain.ids import new_job_id
+from refindery.domain.ids import JobId, new_job_id
 from refindery.domain.models import Job, JobKind, JobStatus
 from tests.fakes.clock import FakeClock
 
 WAIT_S = 15.0
 
 
-async def _wait_for_status(store, job_id, status: JobStatus) -> Job:
+async def _wait_for_status(
+    store: SqliteMetadataStore, job_id: JobId, status: JobStatus
+) -> Job:
     async with asyncio.timeout(WAIT_S):
         while True:
             job = await store.get_job(job_id)
@@ -31,21 +40,21 @@ async def _wait_for_status(store, job_id, status: JobStatus) -> Job:
 
 
 @pytest.fixture
-async def store(tmp_path):
+async def store(tmp_path: Path) -> AsyncIterator[SqliteMetadataStore]:
     async with SqliteMetadataStore(tmp_path / "meta.db") as s:
         await s.migrate()
         yield s
 
 
 def _queue(
-    tmp_path,
-    store,
-    handlers,
+    tmp_path: Path,
+    store: SqliteMetadataStore,
+    handlers: Mapping[JobKind, JobHandler],
     *,
-    on_dead=None,
-    max_attempts=5,
-    clock=None,
-    handler_timeout_s=None,
+    on_dead: DeadJobCallback | None = None,
+    max_attempts: int = 5,
+    clock: Clock | None = None,
+    handler_timeout_s: float | None = None,
 ) -> HueyJobQueue:
     return HueyJobQueue(
         path=tmp_path / "huey.db",

@@ -222,7 +222,7 @@ class SearchService:
         timer.record("sparse", hits.timing.sparse_ms)
         timer.record("fuse", hits.timing.fuse_ms)
 
-        scored = await self._rerank(request, hits.fused, timer)
+        scored, reranker_model = await self._rerank(request, hits.fused, timer)
 
         with timer.stage("rollup"):
             pages = rollup_pages(
@@ -257,6 +257,7 @@ class SearchService:
             dense=hits.dense,
             sparse=hits.sparse,
             exact_match=bool(exact_pages),
+            reranker_model=reranker_model,
             recency_half_life_days=recency_half_life_days,
         )
         return outcome
@@ -348,10 +349,10 @@ class SearchService:
 
     async def _rerank(
         self, request: SearchQuery, fused: list[ChunkHit], timer: StageTimer
-    ) -> list[ScoredChunk]:
+    ) -> tuple[list[ScoredChunk], str | None]:
         fusion_scores = {hit.chunk_id: hit for hit in fused}
         if not request.rerank or self._reranker is None or not fused:
-            return _fusion_only(fused)
+            return _fusion_only(fused), None
         chunks = await self._store.get_chunks([hit.chunk_id for hit in fused])
         try:
             with timer.stage("rerank"):
@@ -367,7 +368,7 @@ class SearchService:
                 "reranker failed; serving fusion-only ranking", exc_info=True
             )
             rerank_degraded_total.inc()
-            return _fusion_only(fused)
+            return _fusion_only(fused), None
         rerank_by_id = {score.chunk_id: score.score for score in scores}
         return [
             ScoredChunk(
@@ -378,7 +379,7 @@ class SearchService:
                 rerank_score=rerank_by_id.get(hit.chunk_id),
             )
             for hit in fusion_scores.values()
-        ]
+        ], self._reranker.model_name
 
     async def _hydrate(
         self,
@@ -480,6 +481,7 @@ class SearchService:
         dense: list[ChunkHit],
         sparse: list[ChunkHit],
         exact_match: bool,
+        reranker_model: str | None,
         recency_half_life_days: float | None,
     ) -> None:
         def logged(hits: list[ChunkHit]) -> tuple[LoggedHit, ...]:
@@ -505,11 +507,7 @@ class SearchService:
                 "recency_half_life_days": recency_half_life_days,
             },
             active_model=model_id,
-            reranker_model=(
-                self._reranker.model_name
-                if request.rerank and self._reranker is not None
-                else None
-            ),
+            reranker_model=reranker_model,
             candidate_set=logged(fused),
             dense_hits=logged(dense),
             sparse_hits=logged(sparse),

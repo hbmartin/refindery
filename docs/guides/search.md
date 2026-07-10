@@ -8,7 +8,7 @@ which is why pagination and limits are applied at the very end.
 
 `SearchService.search` (also the shape of each `/v1/compare` arm):
 
-```
+```text
 query
   ├─ embed_query(active model) ──▶ dense top-N ┐
   └─ bm25 sparse ────────────────▶ sparse top-N ├─▶ RRF fuse ─▶ candidate chunks

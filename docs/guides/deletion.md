@@ -35,7 +35,7 @@ so a store that is briefly unavailable still converges. See
 A forget adds a blacklist rule — an exact canonical URL or a domain suffix.
 Manage rules directly:
 
-```
+```text
 GET    /v1/blacklist          list rules
 DELETE /v1/blacklist/{id}     remove a rule (un-blacklist; does not restore content)
 ```

@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from refindery.api.app import create_app
+from refindery.application.ports.reranker import RerankCandidate, RerankScore
 from refindery.domain.ids import ClusterId
 from refindery.domain.models import Cluster, Mention, PageStatus
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
@@ -101,7 +102,9 @@ class _RaisingReranker:
     def model_name(self) -> str:
         return "raising-reranker"
 
-    async def rerank(self, *, query: str, candidates: list) -> list:
+    async def rerank(
+        self, *, query: str, candidates: list[RerankCandidate]
+    ) -> list[RerankScore]:
         msg = f"reranker down for {query!r} ({len(candidates)} candidates)"
         raise RuntimeError(msg)
 

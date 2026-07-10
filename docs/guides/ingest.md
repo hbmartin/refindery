@@ -23,7 +23,7 @@ enqueues a `FETCH_AND_INDEX` job instead of `INDEX_PAGE`.
 
 ## The ingest → index → enrich flow
 
-```
+```text
 POST /v1/pages ──▶ canonicalize URL ──▶ blacklist check ──▶ upsert page ──▶ enqueue job
        │                                                                        │
     202 Accepted (returned immediately)                                         ▼
@@ -64,7 +64,8 @@ with `REFINDERY_CANONICALIZE__*`.
 When a `POST` arrives for a `canonical_url` that already exists:
 
 - `last_seen_at` is set to now and `visit_count` is incremented;
-- the request's `body_text` is **discarded**, even if its content hash differs;
+- the supplied `body_extracted`, `body_html`, or absent body is **discarded**,
+  even if its content hash differs;
 - the response reports `revisit: true` plus a differing-hash flag for observability.
 
 Two distinct URLs with identical content remain two pages in v1 — the
@@ -73,7 +74,7 @@ content-mediated collapse can be added in v2.)
 
 ## Page lifecycle
 
-```
+```text
 queued ──▶ indexing ──▶ indexed
                    │
                    ├──▶ failed ──▶ dead   (after exhausted attempts)

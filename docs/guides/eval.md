@@ -36,6 +36,9 @@ Useful flags: `--db <path>` (query-log file), `--k` (cutoff), `--since` (time
 window), `--model` (filter by active model), `--json` (machine-readable output).
 This command needs no container or provider key — it only reads the log.
 
+The web UI uses the equivalent `POST /v1/admin/eval/score` endpoint with a JSON
+body containing `k`, optional `since`, and optional `model`.
+
 ## `refindery eval replay`
 
 Re-runs a golden set of logged queries under **two configurations** and diffs
@@ -50,6 +53,16 @@ Useful flags: `--model-a/-b`, `--no-rerank-a/-b`, `--k`, `--candidates`,
 `--limit`, `--json`. Replay boots a trimmed runtime (metadata store + vector
 schema only — no sink, no queue), so it is safe to run alongside evaluation
 without perturbing production state.
+
+For the web UI, `POST /v1/admin/eval/replay` enqueues the same live work in the
+durable job ledger. Its response contains a `result_url`; polling that URL
+returns the job state and, when complete, the `ReplayReport`. Unlike the CLI,
+this path may call paid providers while authenticated with a read-scoped token.
+Completed reports and terminal errors are stored in SQLite and survive restart.
+
+`GET /v1/admin/query-log` and `/v1/admin/query-log/{query_id}` expose the logged
+substrate for the Search Lab, including all retrieval arms, final pages,
+per-stage timings, parameters, and the latest feedback label for each page.
 
 ## Retention
 

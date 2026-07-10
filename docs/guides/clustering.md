@@ -20,6 +20,14 @@ UMAP/HDBSCAN are CPU-bound, so a run executes in a `ProcessPoolExecutor` off the
 event loop. Each run is a full refit. Select the algorithm, reducer, and sizing
 with `REFINDERY_CLUSTER__*` — see [Tuning](../configuration/tuning.md).
 
+Each run also computes a separate deterministic two-dimensional PCA projection
+from the original page vectors. This display projection does not affect
+clustering. Page coordinates and the mean coordinate of every cluster are
+persisted with the run, so historical scatter plots remain stable. Read them
+through `GET /v1/clusters/runs` and
+`GET /v1/clusters/projection?run_id=<id>`; current cluster summaries include
+nullable projected centroid coordinates.
+
 ## Stable IDs
 
 The clustering algorithm itself gives no stable IDs; a matching layer does. After

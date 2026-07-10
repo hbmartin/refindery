@@ -57,3 +57,5 @@ def mount_mcp(app: FastAPI, settings: Settings) -> None:
         auth_config=AuthConfig(dependencies=[Depends(require_read)]),
     )
     mcp.mount_http(mount_path="/mcp")
+    app.state.mcp_tools = [tool.model_dump(mode="json") for tool in mcp.tools]
+    app.state.enable_mutating_tools = settings.mcp.enable_mutating_tools

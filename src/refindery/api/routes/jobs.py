@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from refindery.api.auth import require_write
 from refindery.api.deps import get_container
@@ -10,7 +10,7 @@ from refindery.api.schemas import JobListResponse, JobResponse
 from refindery.application.container import Container
 from refindery.domain.errors import JobNotFoundError
 from refindery.domain.ids import JobId
-from refindery.domain.models import Job, JobStatus
+from refindery.domain.models import Job, JobKind, JobStatus
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
 
@@ -31,11 +31,20 @@ def _to_response(job: Job) -> JobResponse:
 @router.get("", operation_id="list_jobs", summary="List jobs")
 async def list_jobs(
     container: Annotated[Container, Depends(get_container)],
-    status_filter: Annotated[JobStatus | None, "status"] = None,
-    limit: int = 100,
+    status_value: Annotated[JobStatus | None, Query(alias="status")] = None,
+    status_filter: Annotated[JobStatus | None, Query(deprecated=True)] = None,
+    kind: Annotated[JobKind | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=1_000)] = 100,
 ) -> JobListResponse:
     """List jobs, newest first, optionally filtered by status."""
-    jobs = await container.store.list_jobs(status=status_filter, limit=limit)
+    if status_value is not None and status_filter is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="use either status or the deprecated status_filter, not both",
+        )
+    jobs = await container.store.list_jobs(
+        status=status_value or status_filter, kind=kind, limit=limit
+    )
     return JobListResponse(jobs=[_to_response(job) for job in jobs])
 
 

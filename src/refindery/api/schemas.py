@@ -79,6 +79,24 @@ class PageResponse(BaseModel):
     status: PageStatus
 
 
+class PageChunkResponse(BaseModel):
+    """One stored chunk with its position in the page body."""
+
+    chunk_id: str
+    ordinal: int
+    text: str
+    token_count: int
+    char_start: int
+    char_end: int
+
+
+class PageChunksResponse(BaseModel):
+    """GET /v1/pages/{id}/chunks."""
+
+    page_id: str
+    chunks: list[PageChunkResponse]
+
+
 class FeatureStatus(BaseModel):
     """Status of an asynchronous enrichment feature for a page."""
 
@@ -301,6 +319,8 @@ class ClusterSummary(BaseModel):
     keywords: list[str]
     size: int
     tombstoned: bool = False
+    projection_x: float | None = None
+    projection_y: float | None = None
 
 
 class ClusterListResponse(BaseModel):
@@ -330,6 +350,43 @@ class RecomputeResponse(BaseModel):
 
     accepted: bool
     detail: str | None = None
+
+
+class ClusterRunResponse(BaseModel):
+    """One persisted clustering run."""
+
+    id: str
+    trigger: str
+    algorithm: str
+    params: dict[str, JsonValue]
+    started_at: datetime
+    finished_at: datetime | None
+    duration_ms: int | None
+    n_pages: int | None
+    n_clusters: int | None
+    n_noise: int | None
+
+
+class ClusterRunsResponse(BaseModel):
+    """GET /v1/clusters/runs."""
+
+    runs: list[ClusterRunResponse]
+
+
+class ClusterProjectionPointResponse(BaseModel):
+    """A page point in a clustering run's display projection."""
+
+    page_id: str
+    x: float
+    y: float
+    cluster_id: str | None
+
+
+class ClusterProjectionResponse(BaseModel):
+    """GET /v1/clusters/projection."""
+
+    run_id: str
+    points: list[ClusterProjectionPointResponse]
 
 
 class EntitySummary(BaseModel):
@@ -418,6 +475,21 @@ class BackfillStartedResponse(BaseModel):
 
     model_id: str
     status: Literal["backfilling"] = "backfilling"
+
+
+class ModelBackfillResponse(BaseModel):
+    """GET /v1/models/{id}/backfill."""
+
+    model_id: str
+    status: Literal["not_started", "running", "complete", "failed"]
+    total_chunks: int
+    embedded_chunks: int
+    total_tokens: int
+    cursor_page_id: str | None
+    started_at: datetime | None
+    updated_at: datetime | None
+    finished_at: datetime | None
+    last_error: str | None
 
 
 class CompareRequest(BaseModel):

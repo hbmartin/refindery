@@ -20,3 +20,4 @@ reviews_triage/
 # Zensical documentation build output and cache
 site/
 .zensical/
+.coverage

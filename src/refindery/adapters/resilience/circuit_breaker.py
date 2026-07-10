@@ -117,7 +117,7 @@ class CircuitBreaker:
             self._state is BreakerState.CLOSED
             and self._consecutive_failures >= self._config.failure_threshold
         ):
-            self._open()
+            self._open(reason=f"{self._consecutive_failures} consecutive failures")
 
     def record_cancellation(self) -> None:
         """Release a cancelled half-open probe by restarting its cooldown.
@@ -128,17 +128,16 @@ class CircuitBreaker:
         """
         if self._state is BreakerState.HALF_OPEN and self._probe_inflight:
             self._probe_inflight = False
-            self._open()
+            self._open(reason="a cancelled half-open probe")
 
-    def _open(self) -> None:
+    def _open(self, *, reason: str) -> None:
         self._opened_at = self._clock.now()
         self._transition(BreakerState.OPEN)
         circuit_breaker_open_total.labels(name=self._name).inc()
         logger.warning(
-            "circuit breaker %s opened after %d consecutive failures; "
-            "cooling down for %.0fs",
+            "circuit breaker %s opened after %s; cooling down for %.0fs",
             self._name,
-            self._consecutive_failures,
+            reason,
             self._config.cooldown_s,
         )
 

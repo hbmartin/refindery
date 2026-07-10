@@ -1,6 +1,6 @@
 """Cluster endpoints."""
 
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -10,6 +10,10 @@ from refindery.api.schemas import (
     ClusterDetailResponse,
     ClusterListResponse,
     ClusterMemberPage,
+    ClusterProjectionPointResponse,
+    ClusterProjectionResponse,
+    ClusterRunResponse,
+    ClusterRunsResponse,
     ClusterSummary,
     RecomputeResponse,
 )
@@ -21,14 +25,26 @@ from refindery.domain.models import Cluster
 router = APIRouter(prefix="/v1/clusters", tags=["clusters"])
 
 
-def _summary(cluster: Cluster) -> ClusterSummary:
+def _summary(
+    cluster: Cluster, *, centroid: tuple[float, float] | None = None
+) -> ClusterSummary:
     return ClusterSummary(
         id=cluster.id,
         label=cluster.label,
         keywords=cluster.keywords,
         size=cluster.size,
         tombstoned=cluster.tombstoned_at is not None,
+        projection_x=None if centroid is None else centroid[0],
+        projection_y=None if centroid is None else centroid[1],
     )
+
+
+async def _latest_centroids(container: Container) -> dict[str, tuple[float, float]]:
+    runs = await container.store.list_cluster_runs(limit=1)
+    if not runs:
+        return {}
+    _, centroids = await container.store.get_cluster_projection(run_id=runs[0].id)
+    return {str(item.cluster_id): (item.x, item.y) for item in centroids}
 
 
 @router.get(
@@ -48,7 +64,64 @@ async def list_clusters(
     clusters = await container.store.list_clusters(
         include_tombstoned=include_tombstoned
     )
-    return ClusterListResponse(clusters=[_summary(c) for c in clusters])
+    centroids = await _latest_centroids(container)
+    return ClusterListResponse(
+        clusters=[_summary(c, centroid=centroids.get(c.id)) for c in clusters]
+    )
+
+
+@router.get("/runs", operation_id="list_cluster_runs", summary="List clustering runs")
+async def list_cluster_runs(
+    container: Annotated[Container, Depends(get_container)],
+    limit: Annotated[int, Query(ge=1, le=1_000)] = 100,
+) -> ClusterRunsResponse:
+    """Return persisted clustering history newest first."""
+    runs = await container.store.list_cluster_runs(limit=limit)
+    return ClusterRunsResponse(
+        runs=[
+            ClusterRunResponse(
+                id=run.id,
+                trigger=run.trigger,
+                algorithm=run.algorithm,
+                params=cast("dict[str, Any]", run.params),
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+                duration_ms=run.duration_ms,
+                n_pages=run.n_pages,
+                n_clusters=run.n_clusters,
+                n_noise=run.n_noise,
+            )
+            for run in runs
+        ]
+    )
+
+
+@router.get(
+    "/projection",
+    operation_id="cluster_projection",
+    summary="Read a run's two-dimensional page projection",
+)
+async def cluster_projection(
+    container: Annotated[Container, Depends(get_container)],
+    run_id: Annotated[str, Query(min_length=1)],
+) -> ClusterProjectionResponse:
+    """Return page coordinates for a persisted clustering run."""
+    runs = await container.store.list_cluster_runs(limit=1_000)
+    if run_id not in {run.id for run in runs}:
+        raise HTTPException(status_code=404, detail="cluster run not found")
+    points, _ = await container.store.get_cluster_projection(run_id=run_id)
+    return ClusterProjectionResponse(
+        run_id=run_id,
+        points=[
+            ClusterProjectionPointResponse(
+                page_id=point.page_id,
+                x=point.x,
+                y=point.y,
+                cluster_id=point.cluster_id,
+            )
+            for point in points
+        ],
+    )
 
 
 @router.get(
@@ -74,7 +147,9 @@ async def cluster_pages(
     pages = await container.store.get_pages([member.page_id for member in members])
     probability = {member.page_id: member.probability for member in members}
     return ClusterDetailResponse(
-        cluster=_summary(cluster),
+        cluster=_summary(
+            cluster, centroid=(await _latest_centroids(container)).get(cluster.id)
+        ),
         pages=[
             ClusterMemberPage(
                 page_id=page.id,

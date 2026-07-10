@@ -6,6 +6,9 @@ takes a write lock and never contends with a running server.
 """
 
 import json
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -39,6 +42,38 @@ FROM feedback
 ORDER BY ts
 """
 
+_DETAIL_SQL = """
+SELECT query_id, epoch_us(ts), kind, compare_id, query_text, params,
+       active_model, reranker_model, candidate_set, dense_hits, sparse_hits,
+       final_pages, timing_ms
+FROM query_log
+WHERE ts >= coalesce(?, ts)
+  AND kind = coalesce(?, kind)
+  AND query_id = coalesce(?, query_id)
+ORDER BY ts DESC
+LIMIT ?
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class DetailedLoggedRun:
+    """Full query-log row for the administration API."""
+
+    query_id: str
+    ts: datetime
+    kind: str
+    compare_id: str | None
+    query_text: str
+    params: dict[str, object]
+    active_model: str
+    reranker_model: str | None
+    candidate_set: list[dict[str, object]]
+    dense_hits: list[dict[str, object]]
+    sparse_hits: list[dict[str, object]]
+    final_pages: list[dict[str, object]]
+    timing_ms: dict[str, float]
+    feedback: dict[str, bool]
+
 
 def _first_occurrence(page_ids: list[str]) -> tuple[PageId, ...]:
     """Candidate pages in fused-score order, deduped to first occurrence.
@@ -63,7 +98,7 @@ class DuckDbQueryLogReader:
         """All logged runs, oldest first; a timezone-naive lower bound is UTC."""
         if since is not None and since.tzinfo is None:
             since = since.replace(tzinfo=UTC)
-        with duckdb.connect(str(self._path), read_only=True) as conn:
+        with _read_connection(self._path) as conn:
             rows = conn.execute(_RUNS_SQL, [since]).fetchall()
         return [
             LoggedRun(
@@ -94,9 +129,68 @@ class DuckDbQueryLogReader:
 
     def read_labels(self) -> dict[QueryId, dict[PageId, bool]]:
         """Feedback labels per query; rows are ts-ordered so the latest wins."""
-        with duckdb.connect(str(self._path), read_only=True) as conn:
+        with _read_connection(self._path) as conn:
             rows = conn.execute(_LABELS_SQL).fetchall()
         labels: dict[QueryId, dict[PageId, bool]] = {}
         for query_id, page_id, relevant in rows:
             labels.setdefault(QueryId(query_id), {})[PageId(page_id)] = relevant
         return labels
+
+    def read_detailed_runs(
+        self,
+        *,
+        since: datetime | None = None,
+        kind: str | None = None,
+        query_id: str | None = None,
+        limit: int = 100,
+    ) -> list[DetailedLoggedRun]:
+        """Read full log rows newest first with latest feedback labels."""
+        if since is not None and since.tzinfo is None:
+            since = since.replace(tzinfo=UTC)
+        with _read_connection(self._path) as conn:
+            rows = conn.execute(_DETAIL_SQL, [since, kind, query_id, limit]).fetchall()
+        labels = self.read_labels()
+        return [
+            DetailedLoggedRun(
+                query_id=row[0],
+                ts=datetime.fromtimestamp(row[1] / 1_000_000, tz=UTC),
+                kind=row[2],
+                compare_id=row[3],
+                query_text=row[4],
+                params=json.loads(row[5]),
+                active_model=row[6],
+                reranker_model=row[7],
+                candidate_set=_structs(row[8]),
+                dense_hits=_structs(row[9]),
+                sparse_hits=_structs(row[10]),
+                final_pages=_structs(row[11]),
+                timing_ms=json.loads(row[12]),
+                feedback={
+                    str(page_id): relevant
+                    for page_id, relevant in labels.get(QueryId(row[0]), {}).items()
+                },
+            )
+            for row in rows
+        ]
+
+
+def _structs(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [
+        {str(key): item_value for key, item_value in item.items()}
+        for item in value
+        if isinstance(item, Mapping)
+    ]
+
+
+def _read_connection(path: Path) -> duckdb.DuckDBPyConnection:
+    """Wait briefly for the sink's per-batch write connection to checkpoint."""
+    for attempt in range(20):
+        try:
+            return duckdb.connect(str(path), read_only=True)
+        except duckdb.ConnectionException:
+            if attempt == 19:
+                raise
+            time.sleep(0.025)
+    raise AssertionError("unreachable")

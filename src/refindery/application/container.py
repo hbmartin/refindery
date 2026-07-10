@@ -21,6 +21,7 @@ from refindery.adapters.llm.openai_compat import OpenAiCompatClient
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
 from refindery.adapters.observability.metrics import jobs_lease_expired
+from refindery.adapters.observability.metrics_history import MetricsSnapshotter
 from refindery.adapters.observability.query_log import DuckDbQueryLog
 from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.resilience.circuit_breaker import BreakerConfig, BreakerRegistry
@@ -36,6 +37,7 @@ from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.query_log import QueryLogSink
 from refindery.application.ports.reranker import Reranker
 from refindery.application.ports.vector_store import VectorStore
+from refindery.application.services.admin_eval import AdminEvalService
 from refindery.application.services.backfill import BackfillService
 from refindery.application.services.canonicalization import CanonicalizationService
 from refindery.application.services.cluster_triggers import IdleDetector
@@ -88,6 +90,8 @@ class Container:
     idle_detector: IdleDetector
     backfill: BackfillService
     compare: CompareService
+    metrics_snapshotter: MetricsSnapshotter
+    admin_eval: AdminEvalService
     reranker: Reranker | None = None
 
     async def startup(self) -> None:
@@ -102,6 +106,7 @@ class Container:
             self.settings.duckdb.path,
         )
         self.sink.start()
+        self.metrics_snapshotter.start()
         await self.store.connect()
         await self.store.migrate()
         await self.registry.sync_from_settings(self.configured_model())
@@ -136,6 +141,7 @@ class Container:
         """Attempt every cleanup step and log individual failures."""
         steps = (
             ("queue", self.queue.stop),
+            ("metrics_snapshotter", self.metrics_snapshotter.stop),
             ("entity_ingest", self.entity_ingest.close),
             ("clustering", self.clustering.close),
             ("vector_store", self.vector_store.close),
@@ -444,6 +450,10 @@ def build_container(settings: Settings) -> Container:
     )
     sink = DuckDbSink(settings.duckdb.path)
     query_log = DuckDbQueryLog(sink)
+    metrics_snapshotter = MetricsSnapshotter(
+        sink,
+        interval_s=settings.observability.metrics_snapshot_interval_s,
+    )
     reranker: Reranker | None = _build_reranker(settings)
     if reranker is not None:
         reranker = ResilientReranker(
@@ -522,6 +532,14 @@ def build_container(settings: Settings) -> Container:
         clock=clock,
         reranker=reranker,
     )
+    admin_eval = AdminEvalService(
+        path=settings.duckdb.path,
+        store=store,
+        queue=queue,
+        compare=compare,
+        clock=clock,
+    )
+    queue.add_handler(JobKind.EVAL_REPLAY, admin_eval.handle_job)
 
     from huey import crontab  # noqa: PLC0415 — scheduling detail
 
@@ -579,5 +597,7 @@ def build_container(settings: Settings) -> Container:
         idle_detector=idle_detector,
         backfill=backfill,
         compare=compare,
+        metrics_snapshotter=metrics_snapshotter,
+        admin_eval=admin_eval,
         reranker=reranker,
     )

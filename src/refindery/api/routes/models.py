@@ -10,6 +10,7 @@ from refindery.api.schemas import (
     BackfillEstimateResponse,
     BackfillRequest,
     BackfillStartedResponse,
+    ModelBackfillResponse,
     ModelInfo,
     ModelListResponse,
     RegisterModelRequest,
@@ -19,6 +20,54 @@ from refindery.domain.errors import ModelBudgetError, ModelNotFoundError
 from refindery.domain.models import EmbeddingModel, ModelStatus
 
 router = APIRouter(prefix="/v1/models", tags=["models"])
+
+
+@router.get(
+    "/{model_id}/backfill",
+    operation_id="get_model_backfill",
+    summary="Read model backfill progress",
+)
+async def get_model_backfill(
+    model_id: str,
+    container: Annotated[Container, Depends(get_container)],
+) -> ModelBackfillResponse:
+    """Return durable progress for a model's corpus backfill."""
+    model = await container.store.get_model(model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="model not found")
+    backfill = await container.store.get_backfill(model_id)
+    if backfill is None:
+        return ModelBackfillResponse(
+            model_id=model_id,
+            status="not_started",
+            total_chunks=0,
+            embedded_chunks=0,
+            total_tokens=0,
+            cursor_page_id=None,
+            started_at=None,
+            updated_at=None,
+            finished_at=None,
+            last_error=None,
+        )
+    progress = (
+        "failed"
+        if backfill.last_error is not None
+        else "complete"
+        if backfill.finished_at is not None
+        else "running"
+    )
+    return ModelBackfillResponse(
+        model_id=model_id,
+        status=progress,
+        total_chunks=backfill.total_chunks,
+        embedded_chunks=backfill.embedded_chunks,
+        total_tokens=backfill.total_tokens,
+        cursor_page_id=backfill.cursor_page_id,
+        started_at=backfill.started_at,
+        updated_at=backfill.updated_at,
+        finished_at=backfill.finished_at,
+        last_error=backfill.last_error,
+    )
 
 
 def _info(model: EmbeddingModel) -> ModelInfo:

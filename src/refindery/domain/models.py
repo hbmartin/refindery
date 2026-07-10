@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from refindery.domain.ids import BlacklistId, ChunkId, JobId, PageId
+from refindery.domain.ids import BlacklistId, ChunkId, ClusterId, JobId, PageId
 
 
 class PageStatus(StrEnum):
@@ -52,6 +52,7 @@ class JobKind(StrEnum):
     LABEL_CLUSTERS = "label_clusters"
     CANONICALIZE_ENTITIES = "canonicalize_entities"
     PURGE_VECTORS = "purge_vectors"
+    EVAL_REPLAY = "eval_replay"
 
 
 class BlacklistKind(StrEnum):
@@ -169,6 +170,38 @@ class ClusterRun:
     n_pages: int | None = None
     n_clusters: int | None = None
     n_noise: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterProjectionPoint:
+    """A page's persisted two-dimensional position for one cluster run."""
+
+    run_id: str
+    page_id: PageId
+    x: float
+    y: float
+    cluster_id: ClusterId | None
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterProjectionCentroid:
+    """A cluster's centroid in the same projection space as its pages."""
+
+    run_id: str
+    cluster_id: ClusterId
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True)
+class EvalReplayResult:
+    """Durable serialized output or failure for an eval replay job."""
+
+    job_id: JobId
+    report: dict[str, object] | None
+    error: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(slots=True)

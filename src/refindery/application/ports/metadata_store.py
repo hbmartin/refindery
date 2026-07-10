@@ -15,8 +15,11 @@ from refindery.domain.models import (
     BlacklistRule,
     Chunk,
     Cluster,
+    ClusterProjectionCentroid,
+    ClusterProjectionPoint,
     ClusterRun,
     EmbeddingModel,
+    EvalReplayResult,
     Job,
     JobKind,
     JobStatus,
@@ -181,7 +184,11 @@ class MetadataStore(Protocol):
         ...
 
     async def list_jobs(
-        self, *, status: JobStatus | None = None, limit: int = 100
+        self,
+        *,
+        status: JobStatus | None = None,
+        kind: JobKind | None = None,
+        limit: int = 100,
     ) -> list[Job]:
         """List jobs, newest first."""
         ...
@@ -415,6 +422,25 @@ class MetadataStore(Protocol):
         """Record a run's completion stats."""
         ...
 
+    async def list_cluster_runs(self, *, limit: int = 100) -> list[ClusterRun]:
+        """List cluster runs newest first."""
+        ...
+
+    async def insert_cluster_projection(
+        self,
+        *,
+        points: list[ClusterProjectionPoint],
+        centroids: list[ClusterProjectionCentroid],
+    ) -> None:
+        """Persist a run's page and cluster projection coordinates."""
+        ...
+
+    async def get_cluster_projection(
+        self, *, run_id: str
+    ) -> tuple[list[ClusterProjectionPoint], list[ClusterProjectionCentroid]]:
+        """Read page and centroid coordinates for a run."""
+        ...
+
     async def insert_lineage(
         self, *, run_id: str, records: list[LineageRecord]
     ) -> None:
@@ -463,6 +489,14 @@ class MetadataStore(Protocol):
 
     async def get_backfill(self, model_id: str) -> ModelBackfill | None:
         """Fetch backfill state."""
+        ...
+
+    async def put_eval_replay_result(self, result: EvalReplayResult) -> None:
+        """Persist a completed replay report or terminal error."""
+        ...
+
+    async def get_eval_replay_result(self, job_id: JobId) -> EvalReplayResult | None:
+        """Fetch a durable replay result."""
         ...
 
     async def delete_model(self, model_id: str) -> None:

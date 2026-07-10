@@ -59,7 +59,7 @@ def test_cluster_worker_rejects_unknown_dispatch_values():
 
 def test_kmeans_caps_clusters_for_small_corpus():
     vectors = np.ones((1, 4), dtype=np.float32)
-    labels, probabilities, _reduce_ms, _cluster_ms = reduce_and_cluster(
+    labels, probabilities, projection, _reduce_ms, _cluster_ms = reduce_and_cluster(
         vectors,
         algorithm="kmeans",
         reducer="none",
@@ -72,6 +72,7 @@ def test_kmeans_caps_clusters_for_small_corpus():
     )
     assert labels.tolist() == [0]
     assert probabilities.tolist() == [1.0]
+    assert projection.shape == (1, 2)
 
 
 def test_leiden_clusters_or_reports_missing_extra():
@@ -105,9 +106,10 @@ def test_leiden_clusters_or_reports_missing_extra():
             reduce_and_cluster(vectors, **kwargs)
         return
 
-    labels, probabilities, _reduce_ms, _cluster_ms = reduce_and_cluster(
+    labels, probabilities, projection, _reduce_ms, _cluster_ms = reduce_and_cluster(
         vectors, **kwargs
     )
     assert len(labels) == len(vectors)
     assert all(label >= 0 for label in labels)
     assert probabilities.tolist() == [1.0] * len(vectors)
+    assert projection.shape == (len(vectors), 2)

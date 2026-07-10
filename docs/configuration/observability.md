@@ -13,6 +13,14 @@ authenticated route. They cover ingest rate, queue depth, job failure rate,
 search latency percentiles, rerank latency, embedding-provider error rate, and
 cluster-run duration.
 
+The server snapshots its own registry into the observability DuckDB every 15
+seconds by default. Configure the positive interval with
+`REFINDERY_OBSERVABILITY__METRICS_SNAPSHOT_INTERVAL_S`. The read-scoped
+`GET /v1/admin/metrics/timeseries?metric=<family>&since=<timestamp>&step=<seconds>`
+endpoint returns one series per label set. Gauge buckets use the last value;
+counters and histogram components return per-window deltas. Current gauges are
+included separately. History is retained until the DuckDB data is purged.
+
 ## Traces
 
 Tracing is off by default. Enable console spans for local diagnosis, or export

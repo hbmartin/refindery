@@ -164,11 +164,29 @@ class FetchSettings(BaseModel):
 
 
 class JobsSettings(BaseModel):
-    """Durable job execution parameters."""
+    """Durable job execution parameters.
+
+    ``handler_timeout_s`` bounds one handler execution (cooperative
+    cancellation); ``None`` derives it from ``lease_minutes``. It exists
+    mainly so tests can use sub-second timeouts.
+    """
 
     max_attempts: int = Field(default=5, ge=1)
     lease_minutes: int = Field(default=15, ge=1)
     backoff_base_s: float = Field(default=2.0, gt=0)
+    handler_timeout_s: float | None = Field(default=None, gt=0)
+
+
+class ResilienceSettings(BaseModel):
+    """Circuit breaker, in-call retry, and provider timeout knobs."""
+
+    breaker_failure_threshold: int = Field(default=5, ge=1)
+    breaker_cooldown_s: float = Field(default=30.0, gt=0)
+    retry_attempts: int = Field(default=3, ge=1)
+    retry_base_delay_s: float = Field(default=0.25, gt=0)
+    retry_max_delay_s: float = Field(default=2.0, gt=0)
+    embed_timeout_s: float = Field(default=60.0, gt=0)
+    rerank_timeout_s: float = Field(default=15.0, gt=0)
 
 
 class McpSettings(BaseModel):
@@ -226,6 +244,7 @@ class LlmSettings(BaseModel):
     base_url: str | None = None
     api_key: SecretStr | None = None
     model: str = "llama3.2"
+    timeout_s: float = Field(default=30.0, gt=0)
 
 
 class ObservabilitySettings(BaseModel):
@@ -265,6 +284,7 @@ class Settings(BaseSettings):
     indexing: IndexingSettings = IndexingSettings()
     fetch: FetchSettings = FetchSettings()
     jobs: JobsSettings = JobsSettings()
+    resilience: ResilienceSettings = ResilienceSettings()
     mcp: McpSettings = McpSettings()
     entity: EntitySettings = EntitySettings()
     search: SearchSettings = SearchSettings()

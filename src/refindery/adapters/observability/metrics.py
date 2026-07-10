@@ -69,6 +69,34 @@ purged_page_hits_total = Counter(
     "Search hits dropped because their page was purged",
     registry=registry,
 )
+circuit_breaker_state = Gauge(
+    "refindery_circuit_breaker_state",
+    "Circuit breaker state (0=closed, 1=half_open, 2=open)",
+    ["name"],
+    registry=registry,
+)
+circuit_breaker_open_total = Counter(
+    "refindery_circuit_breaker_open_total",
+    "Times a circuit breaker opened",
+    ["name"],
+    registry=registry,
+)
+rerank_degraded_total = Counter(
+    "refindery_rerank_degraded_total",
+    "Searches served fusion-only because reranking failed",
+    registry=registry,
+)
+job_lease_timeouts_total = Counter(
+    "refindery_job_lease_timeouts_total",
+    "Jobs cancelled because they exceeded their lease",
+    ["kind"],
+    registry=registry,
+)
+jobs_lease_expired = Gauge(
+    "refindery_jobs_lease_expired",
+    "RUNNING jobs whose lease has expired (watchdog observation)",
+    registry=registry,
+)
 
 
 def render_metrics() -> tuple[bytes, str]:

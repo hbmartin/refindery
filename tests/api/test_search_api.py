@@ -94,6 +94,30 @@ async def harness(tmp_path):
             yield http, container, ids
 
 
+class _RaisingReranker:
+    """Simulates a reranker provider outage at query time."""
+
+    @property
+    def model_name(self) -> str:
+        return "raising-reranker"
+
+    async def rerank(self, *, query: str, candidates: list) -> list:
+        msg = f"reranker down for {query!r} ({len(candidates)} candidates)"
+        raise RuntimeError(msg)
+
+
+async def test_search_degrades_to_fusion_when_reranker_fails(harness):
+    client, container, _ids = harness
+    container.search._reranker = _RaisingReranker()  # noqa: SLF001
+    response = await client.post(
+        "/v1/search", json={"query": "zanzibar authorization"}, headers=AUTH
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["results"], "expected fusion-ranked results despite reranker outage"
+    assert data["results"][0]["title"] == "Zanzibar Paper"
+
+
 async def test_search_response_shape_matches_spec(harness):
     client, _container, ids = harness
     response = await client.post(

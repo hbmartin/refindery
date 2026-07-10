@@ -16,3 +16,7 @@ data/
 coverage.lcov
 triage_decisions.db
 reviews_triage/
+
+# Zensical documentation build output and cache
+site/
+.zensical/

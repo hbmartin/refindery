@@ -99,6 +99,18 @@ class FetchFailedError(RefinderyError):
         super().__init__(f"fetching {url!r} failed: {detail}")
 
 
+class ProviderUnavailableError(RefinderyError):
+    """An external provider's circuit breaker is open; the call was not attempted."""
+
+    def __init__(self, *, provider: str, retry_after_s: float) -> None:
+        self.provider = provider
+        self.retry_after_s = retry_after_s
+        super().__init__(
+            f"provider {provider!r} unavailable (circuit open); "
+            f"retry in ~{retry_after_s:.0f}s"
+        )
+
+
 class UnsupportedContentTypeError(RefinderyError):
     """No extractor is registered for the fetched content type."""
 

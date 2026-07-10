@@ -38,13 +38,24 @@ async def store(tmp_path):
 
 
 def _queue(
-    tmp_path, store, handlers, *, on_dead=None, max_attempts=5, clock=None
+    tmp_path,
+    store,
+    handlers,
+    *,
+    on_dead=None,
+    max_attempts=5,
+    clock=None,
+    handler_timeout_s=None,
 ) -> HueyJobQueue:
     return HueyJobQueue(
         path=tmp_path / "huey.db",
         store=store,
         clock=clock or FakeClock(),
-        settings=JobsSettings(max_attempts=max_attempts, backoff_base_s=0.01),
+        settings=JobsSettings(
+            max_attempts=max_attempts,
+            backoff_base_s=0.01,
+            handler_timeout_s=handler_timeout_s,
+        ),
         handlers=handlers,
         on_dead=on_dead,
     )
@@ -128,6 +139,73 @@ async def test_retries_then_dead_letters_and_manual_retry(tmp_path, store):
         await queue.retry(job_id)
         await _wait_for_status(store, job_id, JobStatus.DEAD)
         assert len(calls) == 3
+    finally:
+        await queue.stop()
+
+
+async def test_lease_timeout_cancels_stuck_job_and_frees_worker(tmp_path, store):
+    release = asyncio.Event()  # never set: the handler is stuck
+    done: list[str] = []
+
+    async def stuck(job: Job) -> None:
+        await release.wait()
+
+    async def quick(job: Job) -> None:
+        done.append(job.idempotency_key)
+
+    queue = _queue(
+        tmp_path,
+        store,
+        {JobKind.INDEX_PAGE: stuck, JobKind.FETCH_AND_INDEX: quick},
+        max_attempts=2,
+        handler_timeout_s=0.2,
+    )
+    await queue.start()
+    try:
+        stuck_id = await queue.enqueue(
+            kind=JobKind.INDEX_PAGE, payload={}, idempotency_key="stuck"
+        )
+        quick_id = await queue.enqueue(
+            kind=JobKind.FETCH_AND_INDEX, payload={}, idempotency_key="quick"
+        )
+        assert stuck_id is not None
+        assert quick_id is not None
+        # The stuck job times out twice and dead-letters...
+        job = await _wait_for_status(store, stuck_id, JobStatus.DEAD)
+        assert job.last_error is not None
+        assert "lease timeout" in job.last_error
+        # ...and the sole worker was freed to run the second job.
+        await _wait_for_status(store, quick_id, JobStatus.DONE)
+        assert done == ["quick"]
+    finally:
+        release.set()
+        await queue.stop()
+
+
+async def test_provider_unavailable_defers_without_burning_attempts(tmp_path, store):
+    from refindery.domain.errors import ProviderUnavailableError
+
+    calls: list[int] = []
+
+    async def outage_then_ok(job: Job) -> None:
+        calls.append(1)
+        if len(calls) < 3:
+            raise ProviderUnavailableError(provider="embed:test", retry_after_s=0.01)
+
+    # max_attempts=1: any counted failure would dead-letter immediately, so
+    # reaching DONE proves deferrals never touched the attempt budget.
+    queue = _queue(
+        tmp_path, store, {JobKind.INDEX_PAGE: outage_then_ok}, max_attempts=1
+    )
+    await queue.start()
+    try:
+        job_id = await queue.enqueue(
+            kind=JobKind.INDEX_PAGE, payload={}, idempotency_key="outage"
+        )
+        assert job_id is not None
+        job = await _wait_for_status(store, job_id, JobStatus.DONE)
+        assert len(calls) == 3
+        assert job.attempts == 0
     finally:
         await queue.stop()
 

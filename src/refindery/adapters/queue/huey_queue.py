@@ -27,10 +27,14 @@ from huey import SqliteHuey
 from huey.consumer import Consumer
 from huey.exceptions import RetryTask
 
-from refindery.adapters.observability.metrics import job_failures_total
+from refindery.adapters.observability.metrics import (
+    job_failures_total,
+    job_lease_timeouts_total,
+)
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.config import JobsSettings
+from refindery.domain.errors import ProviderUnavailableError
 from refindery.domain.ids import JobId, new_job_id
 from refindery.domain.models import Job, JobKind, JobStatus
 
@@ -217,11 +221,47 @@ class HueyJobQueue:
         await self._store.mark_job_running(
             job_id=job.id, lease_until=lease_until, now=now
         )
+        timeout_s = (
+            self._settings.handler_timeout_s
+            if self._settings.handler_timeout_s is not None
+            else self._settings.lease_minutes * 60.0
+        )
+        lease_timeout = asyncio.timeout(timeout_s)
         try:
             if (handler := self._handlers.get(job.kind)) is None:
                 msg = f"no handler registered for job kind {job.kind!r}"
                 raise RuntimeError(msg)  # noqa: TRY301
-            await handler(job)
+            # Cooperative cancellation at lease expiry frees the sole worker.
+            # A CancelledError from loop shutdown is a BaseException and
+            # propagates untouched — it must never hit the failure ledger.
+            async with lease_timeout:
+                await handler(job)
+        except TimeoutError as exc:
+            if lease_timeout.expired():
+                logger.exception(
+                    "job %s (%s) exceeded its lease (%.0fs); cancelled",
+                    job.id,
+                    job.kind,
+                    timeout_s,
+                )
+                job_lease_timeouts_total.labels(kind=job.kind).inc()
+                error = f"lease timeout after {timeout_s:.0f}s"
+            else:
+                # A provider timeout that escaped the handler, not the lease.
+                logger.exception("job %s (%s) failed", job.id, job.kind)
+                error = repr(exc)
+            return await self._record_failure(job, error=error)
+        except ProviderUnavailableError as exc:
+            # Outage deferral: a breaker-open fast-fail must not burn the
+            # attempt budget; requeue after the provider's cooldown.
+            logger.warning("job %s (%s) deferred: %s", job.id, job.kind, exc)
+            await self._store.mark_job_failed(
+                job_id=job.id,
+                attempts=job.attempts,
+                last_error=str(exc),
+                now=self._clock.now(),
+            )
+            return max(self._settings.backoff_base_s, exc.retry_after_s)
         except Exception as exc:
             logger.exception("job %s (%s) failed", job.id, job.kind)
             return await self._record_failure(job, error=repr(exc))

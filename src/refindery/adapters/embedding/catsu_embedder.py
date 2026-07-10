@@ -25,9 +25,11 @@ class _EmbeddingResponse(BaseModel):
     @field_validator("embeddings")
     @classmethod
     def _values_fit_float32(cls, embeddings: list[list[float]]) -> list[list[float]]:
-        if any(abs(value) > _FLOAT32_MAX for vector in embeddings for value in vector):
-            msg = "embedding values must fit in float32"
-            raise ValueError(msg)
+        for vector in embeddings:
+            for value in vector:
+                if abs(value) > _FLOAT32_MAX:
+                    msg = "embedding values must fit in float32"
+                    raise ValueError(msg)
         return embeddings
 
 

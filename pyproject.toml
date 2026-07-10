@@ -89,6 +89,9 @@ dev = [
     "testcontainers>=4.14.2",
     "ty>=0.0.57",
 ]
+docs = [
+    "zensical>=0.0.47",
+]
 
 [tool.uv]
 # numba is not imported directly; the floor keeps the resolver from walking

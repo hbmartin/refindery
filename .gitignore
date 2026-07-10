@@ -11,4 +11,8 @@ wheels/
 
 # Local runtime configuration and state
 .env
+.env.docker
 data/
+coverage.lcov
+triage_decisions.db
+reviews_triage/

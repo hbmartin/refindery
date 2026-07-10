@@ -70,6 +70,31 @@ uv run --env-file .env refindery serve
 Use `--skip-api-key` when you only want to prepare the development environment;
 indexing will remain unavailable until a provider key is configured.
 
+### macOS one-stop Docker setup
+
+If Docker Desktop is already installed, the Docker setup script configures the
+advanced Qdrant profile, builds the app, starts the full stack, and waits for
+the readiness check. It writes generated credentials and container-specific
+settings to a private `.env.docker`, leaving the daemon-free `.env` untouched.
+
+```bash
+./scripts/setup-macos-docker.sh
+```
+
+For unattended setup, pass the Voyage key through the environment. Use
+`--no-start` to prepare and validate the configuration without launching the
+stack, or `--skip-api-key` when indexing does not need to work yet.
+
+```bash
+VOYAGE_API_KEY=... ./scripts/setup-macos-docker.sh
+```
+
+On later runs, use the dedicated environment file with Compose:
+
+```bash
+docker compose --env-file .env.docker up -d --build
+```
+
 ### Manual minimal profile (no Docker)
 
 ```bash
@@ -94,6 +119,8 @@ python -m refindery
 The multi-stage `Dockerfile` builds a slim image with the `ner` extra
 (no torch/gliner; add extras to the sync lines if you need them). Data
 lives on the `refindery_data` volume, model caches on `refindery_models`.
+On macOS, `./scripts/setup-macos-docker.sh` automates this profile and keeps its
+settings separate from a host-Python `.env`.
 
 ```bash
 export REFINDERY_AUTH_TOKEN="$(openssl rand -hex 24)"
@@ -148,6 +175,201 @@ export REFINDERY_AUTH_TOKENS='[
 Read-scoped tokens can search, browse, compare, and record feedback;
 mutating endpoints (`add_page`, `forget`, model management, …) return 403
 without the `write` scope.
+
+## Advanced setup
+
+### Configuration model
+
+Every application setting can be supplied as an environment variable. Use the
+`REFINDERY_` prefix and separate nested names with `__`: for example,
+`embedder.model` becomes `REFINDERY_EMBEDDER__MODEL`. Tuple and list values are
+JSON, kept on one line. Defaults and validation rules live in
+[`src/refindery/config.py`](src/refindery/config.py).
+
+Refindery reads `.env` for its own settings, and `.env` is git-ignored. Start it
+with `uv run --env-file .env`, however, so native provider variables such as
+`VOYAGE_API_KEY` and `COHERE_API_KEY` are also exported to their SDKs:
+
+```bash
+uv run --env-file .env refindery serve
+```
+
+Use an absolute path for each state file when a service manager or container
+may start Refindery from a different working directory. Relative paths resolve
+from the process working directory.
+
+### Daemon-free workstation profile
+
+This profile keeps all state under `data/`, uses spaCy for entities, and uses
+one Voyage key for embeddings and reranking. Generate the auth token with
+`openssl rand -hex 24`, then put the result and provider key in `.env`:
+
+```dotenv
+REFINDERY_AUTH_TOKEN=replace-with-a-generated-token
+REFINDERY_BIND_HOST=127.0.0.1
+REFINDERY_BIND_PORT=8000
+
+REFINDERY_VECTOR_STORE=lancedb
+REFINDERY_LANCEDB__PATH=data/lancedb
+REFINDERY_SQLITE__PATH=data/refindery.db
+REFINDERY_HUEY__PATH=data/huey.db
+REFINDERY_DUCKDB__PATH=data/observability.duckdb
+
+VOYAGE_API_KEY=replace-with-your-provider-key
+REFINDERY_EMBEDDER__PROVIDER=voyage
+REFINDERY_EMBEDDER__MODEL=voyage-3.5
+REFINDERY_EMBEDDER__DIM=1024
+REFINDERY_EMBEDDER__MAX_INPUT_TOKENS=32000
+REFINDERY_RERANKER__KIND=api
+REFINDERY_RERANKER__PROVIDER=voyage
+REFINDERY_RERANKER__MODEL=rerank-2.5
+
+REFINDERY_ENTITY__EXTRACTOR_CHAIN='["spacy"]'
+```
+
+Install and launch it with:
+
+```bash
+uv sync --locked --extra ner
+uv run --env-file .env refindery serve
+```
+
+The configured embedding dimension and input limit are authoritative: if they
+do not match the provider model, indexing fails instead of storing malformed
+vectors. Changing an embedding model also creates a distinct vector space; use
+the model registration and backfill API rather than relabeling an existing
+model.
+
+### Qdrant profile
+
+For a separate vector daemon, start only Qdrant from Compose and run the Python
+process on the host:
+
+```bash
+docker compose up -d qdrant
+```
+
+Then replace the LanceDB settings in `.env` with:
+
+```dotenv
+REFINDERY_VECTOR_STORE=qdrant
+REFINDERY_QDRANT__URL=http://127.0.0.1:6333
+REFINDERY_QDRANT__COLLECTION=refindery_chunks
+```
+
+For a remote authenticated Qdrant deployment, set its HTTPS URL and add
+`REFINDERY_QDRANT__API_KEY`. SQLite metadata, Huey jobs, and the DuckDB query
+log remain local even when vectors are remote, so back up all four stores as a
+unit. The fully containerized Compose profile already points the app at the
+`qdrant` service and persists each store in a named volume.
+
+### Entity and content extraction
+
+The entity chain is an ordered fallback, not an ensemble: the first healthy
+extractor handles each page, and the next is tried only if it fails. The
+standard `ner` extra makes `spacy` available. Other useful profiles are:
+
+```bash
+uv sync --extra gliner --extra ner   # GLiNER, then spaCy fallback
+uv sync --extra html --extra ner     # accept body_html and fetched HTML
+uv sync --extra leiden --extra ner   # enable Leiden clustering
+```
+
+Configure GLiNER with spaCy fallback as one-line JSON:
+
+```dotenv
+REFINDERY_ENTITY__EXTRACTOR_CHAIN='["gliner", "spacy"]'
+```
+
+A gazetteer needs no model dependency. Its file is JSONL, with one validated
+entity per line:
+
+```jsonl
+{"label":"technology","pattern":"Kubernetes"}
+{"label":"product","pattern":"Refindery"}
+```
+
+```dotenv
+REFINDERY_ENTITY__EXTRACTOR_CHAIN='["gazetteer"]'
+REFINDERY_ENTITY__GAZETTEER_PATTERNS_PATH=/absolute/path/entities.jsonl
+```
+
+Valid labels are `person`, `org`, `product`, `technology`, `concept`, `place`,
+and `work`. For an OpenAI-compatible entity endpoint, include `llm` in the
+chain and configure `REFINDERY_LLM__BASE_URL`, `REFINDERY_LLM__MODEL`, and,
+when required, `REFINDERY_LLM__API_KEY`. The endpoint must accept
+`POST <base-url>/chat/completions`.
+
+### Ranking, clustering, and job tuning
+
+The defaults are conservative for a single-user machine. These are the main
+knobs to revisit for a larger collection:
+
+| Setting | Default | Purpose |
+| ------- | ------- | ------- |
+| `REFINDERY_CHUNKING__TARGET_TOKENS` | `448` | Desired chunk size |
+| `REFINDERY_CHUNKING__OVERLAP_TOKENS` | `64` | Context repeated across chunks |
+| `REFINDERY_CHUNKING__HARD_MAX_TOKENS` | `512` | Maximum canonical chunk size |
+| `REFINDERY_FETCH__TIMEOUT_S` | `10.0` | Outbound fetch timeout |
+| `REFINDERY_FETCH__MAX_BYTES` | `10000000` | Maximum fetched response size |
+| `REFINDERY_JOBS__MAX_ATTEMPTS` | `5` | Attempts before a job becomes dead |
+| `REFINDERY_JOBS__LEASE_MINUTES` | `15` | Recovery lease for in-flight work |
+| `REFINDERY_CLUSTER__MIN_PAGES` | `50` | Pages required for the first cluster run |
+| `REFINDERY_CLUSTER__MIN_NEW_PAGES` | `20` | New pages required for an idle-triggered run |
+| `REFINDERY_SEARCH__RECENCY_HALF_LIFE_DAYS` | unset | Optional ranking decay toward recent pages |
+
+Set `REFINDERY_RERANKER__KIND=none` for fusion-only search with no reranking
+provider call. To schedule clustering in addition to its idle trigger, set a
+one-to-five-field crontab expression, for example:
+
+```dotenv
+REFINDERY_CLUSTER__CRON='0 3 * * *'
+```
+
+### Observability and network access
+
+JSON logs and authenticated Prometheus metrics are enabled by default. Traces
+are off; enable console spans for diagnosis or send OTLP over HTTP:
+
+```dotenv
+REFINDERY_OBSERVABILITY__TRACES=otlp
+REFINDERY_OBSERVABILITY__OTLP_ENDPOINT=http://127.0.0.1:4318/v1/traces
+REFINDERY_OBSERVABILITY__JSON_LOGS=true
+```
+
+If no Refindery OTLP endpoint is set, the standard
+`OTEL_EXPORTER_OTLP_ENDPOINT` variable is used. Query logs retain raw query
+text for offline evaluation; review the purge and backup guidance in
+[`docs/operations.md`](docs/operations.md) before retaining them long term.
+
+The default bind address is loopback-only. If another machine must connect,
+set `REFINDERY_BIND_HOST=0.0.0.0` only behind a firewall and a TLS-terminating
+reverse proxy, keep bearer authentication enabled, and do not expose the
+SQLite, DuckDB, Huey, or LanceDB files over a shared filesystem.
+
+### Validate the installation
+
+First validate and print the resolved configuration. Pydantic masks secret
+values in this output:
+
+```bash
+uv run --env-file .env python - <<'PY'
+from refindery.config import load_settings
+
+print(load_settings().model_dump_json(indent=2))
+PY
+```
+
+After starting the server, check liveness and readiness separately. Readiness
+confirms that the metadata store is reachable and an embedding model is active:
+
+```bash
+curl -fsS http://127.0.0.1:8000/healthz
+curl -fsS http://127.0.0.1:8000/readyz
+```
+
+Then use the ingest and search requests above as an end-to-end check of the
+queue, embedding provider, vector store, and retrieval path.
 
 ## HTTP API
 

@@ -73,8 +73,9 @@ curl -s http://127.0.0.1:8000/v1/pages/pg_.../status \
   -H "Authorization: Bearer $REFINDERY_AUTH_TOKEN"
 ```
 
-Poll until `status` is `indexed` (or `failed`/`dead`). See
-[Page lifecycle](#page-lifecycle-status-values).
+Poll until `status` is `indexed` or `dead`. A `failed` status may be transient
+while retries remain, so continue polling. See [Page
+lifecycle](#page-lifecycle-status-values).
 
 ### Minimal integration checklist
 
@@ -99,7 +100,7 @@ All ingest endpoints live under the `/v1` prefix. The base URL defaults to
 Every endpoint below (except the unauthenticated `/healthz` and `/readyz`)
 requires an HTTP Bearer token:
 
-```
+```http
 Authorization: Bearer <REFINDERY_AUTH_TOKEN>
 ```
 
@@ -111,7 +112,7 @@ constant-time; there is a single shared token (no per-client keys).
 ### Content type
 
 Request bodies are JSON (`Content-Type: application/json`). Responses are JSON
-unless noted. Request models reject unknown fields (`extra="forbid`") — a typo'd
+unless noted. Request models reject unknown fields (`extra="forbid"`) — a typo'd
 field name yields `422`, so keep payloads clean.
 
 ### Timestamps
@@ -125,8 +126,10 @@ must carry an offset.
 ## The core endpoint: `POST /v1/pages`
 
 The single entry point for adding a page. Everything an upstream source does
-centers on this call. It is idempotent per canonical URL: the first time a
-canonical URL is seen it is created; subsequent calls record a *revisit*.
+centers on this call. Canonical URLs are deduplicated: the first request creates
+a page, while subsequent requests record a *revisit* by incrementing
+`visit_count` and updating `last_seen_at`. Retries therefore have observable
+side effects and count as revisits.
 
 ### Request body (`IngestPageRequest`)
 
@@ -199,13 +202,15 @@ per canonical URL, never versioned.**
   `body_html`) whose content hash differs from the stored one, i.e. the page
   **changed since it was first indexed**. Refindery does *not* automatically
   re-index on a revisit; if you care about the new content, treat this flag as a
-  signal to `forget` + re-ingest, or to surface a "content changed" state to the
-  user. If it is `false` (or you sent no body), the stored version stands.
+  signal to `forget`, delete the returned blacklist rule, and then re-ingest.
+  Alternatively, surface a "content changed" state to the user. If it is
+  `false` (or you sent no body), the stored version stands.
 
 #### `403 Forbidden` — blacklisted (`BlacklistedResponse`)
 
 The canonical URL or its domain matches a blacklist rule (see
-[`/v1/forget`](#post-v1forget--purge--blacklist)). The page is **not** ingested.
+[`/v1/forget`](#removing-content-post-v1forget--purge--blacklist)). The page is
+**not** ingested.
 
 ```json
 { "error": "blacklisted", "pattern": "example.com" }
@@ -314,11 +319,12 @@ mechanism.
 
 ---
 
-## Removing content: `POST /v1/forget` — purge + blacklist { #post-v1forget--purge--blacklist }
+## Removing content: `POST /v1/forget` — purge + blacklist { #removing-content-post-v1forget--purge--blacklist }
 
 The upstream's "delete this / never index this" control. **Destructive.** It
-atomically (a) permanently purges matching pages from the index and (b) adds a
-blacklist rule so future `POST /v1/pages` calls for that target return `403`.
+immediately adds a blacklist rule and purges matching metadata so future
+`POST /v1/pages` calls for that target return `403`. Vector deletion is queued
+and completes eventually, so residual vector-store data may remain temporarily.
 
 Request (`ForgetRequest`) — provide **exactly one** of `url` or `domain`:
 
@@ -406,7 +412,7 @@ auth (they leak nothing); `/metrics` does.
 
 ## End-to-end flow (reference)
 
-```
+```text
                       ┌──────────────────────────────────────────┐
   upstream source     │              Refindery                    │
   ────────────────    │                                           │

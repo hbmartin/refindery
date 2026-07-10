@@ -61,8 +61,6 @@ set_env_value() {
 
     [[ "${value}" != *$'\n'* && "${value}" != *$'\r'* ]] || \
         fail "${key} must be a single-line value"
-    [[ "${value}" != *[[:space:]]* ]] || \
-        fail "${key} must not contain whitespace"
 
     temporary_file="$(mktemp "${ENV_FILE}.XXXXXX")"
     awk -v key="${key}" \

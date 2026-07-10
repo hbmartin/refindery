@@ -27,6 +27,8 @@ def test_docker_setup_is_idempotent_and_starts_stack(tmp_path: Path) -> None:
     copied_setup = scripts / SETUP_SCRIPT.name
     _write_executable(copied_setup, SETUP_SCRIPT.read_text())
     (project / "docker-compose.yml").write_text("services: {}\n")
+    env_file = project / ".env.docker"
+    env_file.write_text('REFINDERY_ENTITY__EXTRACTOR_CHAIN=["spacy", "gliner"]\n')
     _write_executable(fake_bin / "uname", "#!/usr/bin/env bash\necho Darwin\n")
     _write_executable(
         fake_bin / "openssl",
@@ -56,19 +58,20 @@ exit 1
     env["VOYAGE_API_KEY"] = "first-provider-key"
     subprocess.run([copied_setup], check=True, cwd=project, env=env)
 
-    first_env = (project / ".env.docker").read_text()
+    first_env = env_file.read_text()
+    assert env_file.stat(follow_symlinks=False).st_mode & 0o777 == 0o600
     assert "REFINDERY_AUTH_TOKEN=generated-docker-auth-token" in first_env
     assert "REFINDERY_VECTOR_STORE=qdrant" in first_env
     assert "REFINDERY_QDRANT__URL=http://qdrant:6333" in first_env
     assert "REFINDERY_RERANKER__PROVIDER=voyage" in first_env
     assert "REFINDERY_RERANKER__MODEL=rerank-2.5" in first_env
-    assert "REFINDERY_ENTITY__EXTRACTOR_CHAIN='[\"spacy\"]'" in first_env
+    assert 'REFINDERY_ENTITY__EXTRACTOR_CHAIN=["spacy", "gliner"]' in first_env
     assert "VOYAGE_API_KEY=first-provider-key" in first_env
 
     env["VOYAGE_API_KEY"] = "replacement-provider-key"
     subprocess.run([copied_setup], check=True, cwd=project, env=env)
 
-    second_env = (project / ".env.docker").read_text()
+    second_env = env_file.read_text()
     assert "REFINDERY_AUTH_TOKEN=generated-docker-auth-token" in second_env
     assert "VOYAGE_API_KEY=replacement-provider-key" in second_env
     for key in (

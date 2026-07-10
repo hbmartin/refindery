@@ -6,14 +6,12 @@ takes a write lock and never contends with a running server.
 """
 
 import json
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-import duckdb
-
+from refindery.adapters.observability.duckdb_sink import open_read_only
 from refindery.application.ports.query_log_reader import LoggedRun
 from refindery.domain.ids import PageId, QueryId
 
@@ -98,7 +96,7 @@ class DuckDbQueryLogReader:
         """All logged runs, oldest first; a timezone-naive lower bound is UTC."""
         if since is not None and since.tzinfo is None:
             since = since.replace(tzinfo=UTC)
-        with _read_connection(self._path) as conn:
+        with open_read_only(self._path) as conn:
             rows = conn.execute(_RUNS_SQL, [since]).fetchall()
         return [
             LoggedRun(
@@ -129,7 +127,7 @@ class DuckDbQueryLogReader:
 
     def read_labels(self) -> dict[QueryId, dict[PageId, bool]]:
         """Feedback labels per query; rows are ts-ordered so the latest wins."""
-        with _read_connection(self._path) as conn:
+        with open_read_only(self._path) as conn:
             rows = conn.execute(_LABELS_SQL).fetchall()
         labels: dict[QueryId, dict[PageId, bool]] = {}
         for query_id, page_id, relevant in rows:
@@ -147,7 +145,7 @@ class DuckDbQueryLogReader:
         """Read full log rows newest first with latest feedback labels."""
         if since is not None and since.tzinfo is None:
             since = since.replace(tzinfo=UTC)
-        with _read_connection(self._path) as conn:
+        with open_read_only(self._path) as conn:
             rows = conn.execute(_DETAIL_SQL, [since, kind, query_id, limit]).fetchall()
         labels = self.read_labels()
         return [
@@ -182,15 +180,3 @@ def _structs(value: object) -> list[dict[str, object]]:
         for item in value
         if isinstance(item, Mapping)
     ]
-
-
-def _read_connection(path: Path) -> duckdb.DuckDBPyConnection:
-    """Wait briefly for the sink's per-batch write connection to checkpoint."""
-    for attempt in range(20):
-        try:
-            return duckdb.connect(str(path), read_only=True)
-        except duckdb.ConnectionException:
-            if attempt == 19:
-                raise
-            time.sleep(0.025)
-    raise AssertionError("unreachable")

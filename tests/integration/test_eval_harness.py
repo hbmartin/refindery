@@ -9,7 +9,6 @@ import duckdb
 import httpx
 import pytest
 
-from refindery.adapters.observability import query_log_reader as reader_module
 from refindery.adapters.observability.query_log import QUERY_LOG_DDL
 from refindery.adapters.observability.query_log_reader import DuckDbQueryLogReader
 from refindery.api.app import create_app
@@ -193,7 +192,7 @@ def test_reader_treats_naive_since_as_utc(tmp_path, monkeypatch):
         conn.execute("SET TimeZone = 'America/Los_Angeles'")
         return conn
 
-    monkeypatch.setattr(reader_module.duckdb, "connect", connect_with_non_utc_timezone)
+    monkeypatch.setattr(duckdb, "connect", connect_with_non_utc_timezone)
 
     reader = DuckDbQueryLogReader(db_path)
     since = datetime(2026, 7, 1)  # noqa: DTZ001 — intentionally timezone-naive

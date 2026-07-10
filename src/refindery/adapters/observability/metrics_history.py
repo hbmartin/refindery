@@ -2,15 +2,16 @@
 
 import asyncio
 import json
-import time
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-import duckdb
-
-from refindery.adapters.observability.duckdb_sink import DuckDbSink, TableSpec
+from refindery.adapters.observability.duckdb_sink import (
+    DuckDbSink,
+    TableSpec,
+    open_read_only,
+)
 from refindery.adapters.observability.metrics import registry
 
 METRICS_DDL = """
@@ -103,7 +104,7 @@ class DuckDbMetricsReader:
 
     def metric_exists(self, metric: str) -> bool:
         """Whether at least one snapshot exists for a metric family."""
-        with _connect(self._path) as conn:
+        with open_read_only(self._path) as conn:
             row = conn.execute(
                 "SELECT 1 FROM metrics_samples WHERE metric = ? LIMIT 1", [metric]
             ).fetchone()
@@ -117,7 +118,7 @@ class DuckDbMetricsReader:
         """Read and downsample all labeled series in a metric family."""
         if since is not None and since.tzinfo is None:
             since = since.replace(tzinfo=UTC)
-        with _connect(self._path) as conn:
+        with open_read_only(self._path) as conn:
             rows = conn.execute(
                 "SELECT epoch_us(ts), sample, labels, metric_type, value "
                 "FROM metrics_samples WHERE metric = ? AND ts >= coalesce(?, ts) "
@@ -144,10 +145,20 @@ class DuckDbMetricsReader:
         ]
 
 
+_CUMULATIVE_TYPES = frozenset({"counter", "histogram", "summary"})
+
+
 def _downsample(
     points: list[MetricPoint], *, metric_type: str, step_s: float
 ) -> list[MetricPoint]:
-    """Last-value gauges and deltas for cumulative metric families."""
+    """Last-value gauges and per-window deltas for cumulative metric families.
+
+    Cumulative families report the rise over each window measured against the
+    previous window's last value; the first window is seeded from its own first
+    sample so every window (including the first) is a consistent within-window
+    delta. A negative step means the counter reset (e.g. a process restart), so
+    the increment since the reset is lost and the window is clamped to 0.
+    """
     buckets: dict[int, list[MetricPoint]] = {}
     for point in points:
         bucket = int(point.ts.timestamp() // step_s)
@@ -157,9 +168,9 @@ def _downsample(
     for bucket_points in buckets.values():
         latest = bucket_points[-1]
         value = latest.value
-        if metric_type in {"counter", "histogram", "summary"}:
-            first = previous if previous is not None else bucket_points[0].value
-            value = max(0.0, latest.value - first)
+        if metric_type in _CUMULATIVE_TYPES:
+            baseline = bucket_points[0].value if previous is None else previous
+            value = max(0.0, latest.value - baseline)
             previous = latest.value
         output.append(MetricPoint(ts=latest.ts, value=value))
     return output
@@ -179,15 +190,3 @@ def current_gauges(metric: str) -> list[MetricSeries]:
         if family.name == metric and family.type == "gauge"
         for sample in family.samples
     ]
-
-
-def _connect(path: Path) -> duckdb.DuckDBPyConnection:
-    """Open read-only after any in-progress sink batch has checkpointed."""
-    for attempt in range(20):
-        try:
-            return duckdb.connect(str(path), read_only=True)
-        except duckdb.ConnectionException:
-            if attempt == 19:
-                raise
-            time.sleep(0.025)
-    raise AssertionError("unreachable")

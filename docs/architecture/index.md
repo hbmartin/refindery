@@ -84,3 +84,10 @@ the single `REFINDERY_AUTH_TOKEN` remains a full-access shorthand. MCP
 tool calls replay through the HTTP routes with the caller's token, so
 scopes bind on every transport; `REFINDERY_MCP__ENABLE_MUTATING_TOOLS`
 only controls which tools are listed.
+
+## Related
+
+- [Data model](data-model.md) — the relational schema behind the metadata store.
+- [Python API](../reference/python-api/index.md) — the ports, domain types, and services.
+- [Operations](../operations/index.md) — the job lease model and vector-store caveats.
+- [Configuration](../configuration/index.md) — how adapters and knobs are selected.

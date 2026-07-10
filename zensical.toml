@@ -1,0 +1,174 @@
+# Zensical configuration for the Refindery documentation site.
+#
+# Built by CI (.github/workflows/docs.yml) with `zensical build --clean
+# --strict` and deployed to GitHub Pages. Preview locally with
+# `uv run zensical serve`. See https://zensical.org/docs/ for the reference.
+
+[project]
+site_name = "Refindery"
+site_description = "A local, single-machine retrieval engine over the web pages you read."
+site_author = "Harold Martin"
+site_url = "https://hbmartin.github.io/refindery/"
+repo_url = "https://github.com/hbmartin/refindery"
+copyright = "Copyright &copy; 2026 The Refindery authors — MIT License"
+
+docs_dir = "docs"
+site_dir = "site"
+
+# Navigation. Every entry must resolve to a file under docs_dir; `zensical
+# build --strict` aborts on missing targets or broken internal links. The
+# first child of each section is its landing page (navigation.indexes).
+nav = [
+  { "Home" = "index.md" },
+  { "Getting started" = [
+    { "Overview" = "getting-started/index.md" },
+    { "Installation" = "getting-started/installation.md" },
+    { "Quickstart" = "getting-started/quickstart.md" },
+    { "Validate the install" = "getting-started/validate.md" },
+  ] },
+  { "Guides" = [
+    { "Overview" = "guides/index.md" },
+    { "Ingesting pages" = "guides/ingest.md" },
+    { "Searching" = "guides/search.md" },
+    { "MCP for agents" = "guides/mcp.md" },
+    { "Evaluation" = "guides/eval.md" },
+    { "Clustering" = "guides/clustering.md" },
+    { "Entities" = "guides/entities.md" },
+    { "Embedding models" = "guides/models.md" },
+    { "Deletion & blacklist" = "guides/deletion.md" },
+  ] },
+  { "Configuration" = [
+    { "Overview" = "configuration/index.md" },
+    { "Settings reference" = "configuration/reference.md" },
+    { "Deployment profiles" = "configuration/deployment-profiles.md" },
+    { "Authentication" = "configuration/auth.md" },
+    { "Tuning" = "configuration/tuning.md" },
+    { "Observability" = "configuration/observability.md" },
+  ] },
+  { "Architecture" = [
+    { "Overview" = "architecture/index.md" },
+    { "Data model" = "architecture/data-model.md" },
+  ] },
+  { "Operations" = "operations/index.md" },
+  { "Reference" = [
+    { "Overview" = "reference/index.md" },
+    { "HTTP API" = "reference/http-api.md" },
+    { "Upstream ingest API" = "reference/upstream-ingest-api.md" },
+    { "MCP tools" = "reference/mcp-tools.md" },
+    { "CLI" = "reference/cli.md" },
+    { "Python API" = [
+      { "Overview" = "reference/python-api/index.md" },
+      { "Configuration" = "reference/python-api/config.md" },
+      { "Domain models" = "reference/python-api/domain.md" },
+      { "Ports" = "reference/python-api/ports.md" },
+      { "Services" = "reference/python-api/services.md" },
+    ] },
+  ] },
+  { "Contributing" = [
+    { "Overview" = "contributing/index.md" },
+    { "Testing" = "contributing/testing.md" },
+  ] },
+]
+
+[project.theme]
+# "modern" is the Zensical default; "classic" restores the Material for
+# MkDocs look.
+variant = "modern"
+language = "en"
+features = [
+  "announce.dismiss",
+  "content.action.edit",
+  "content.action.view",
+  "content.code.annotate",
+  "content.code.copy",
+  "content.code.select",
+  "content.footnote.tooltips",
+  "content.tabs.link",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "toc.follow",
+]
+
+[project.theme.icon]
+logo = "lucide/search"
+
+# Light / dark color schemes with a header toggle.
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "indigo"
+accent = "indigo"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "indigo"
+accent = "indigo"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/hbmartin/refindery"
+
+# Markdown extensions. Mirrors the Zensical starter set plus what the docs
+# pages rely on (admonitions, tabbed blocks, code highlighting, tables).
+[project.markdown_extensions.abbr]
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.def_list]
+[project.markdown_extensions.footnotes]
+[project.markdown_extensions.md_in_html]
+[project.markdown_extensions.tables]
+[project.markdown_extensions.toc]
+permalink = true
+
+[project.markdown_extensions.pymdownx.betterem]
+[project.markdown_extensions.pymdownx.caret]
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.emoji]
+emoji_generator = "zensical.extensions.emoji.to_svg"
+emoji_index = "zensical.extensions.emoji.twemoji"
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.keys]
+[project.markdown_extensions.pymdownx.mark]
+[project.markdown_extensions.pymdownx.smartsymbols]
+[project.markdown_extensions.pymdownx.superfences]
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+[project.markdown_extensions.pymdownx.tilde]
+
+# Plugins. Search ships with Zensical; mkdocstrings renders the Python API
+# reference pages from source docstrings via griffe (static analysis, so the
+# optional heavy extras such as torch/gliner are never imported at build time).
+[project.plugins.search]
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+inventories = ["https://docs.python.org/3/objects.inv"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+show_source = false
+show_root_heading = true
+show_root_full_path = false
+show_symbol_type_heading = true
+show_symbol_type_toc = true
+separate_signature = true
+signature_crossrefs = true
+merge_init_into_class = true
+docstring_section_style = "spacy"
+filters = ["!^_"]

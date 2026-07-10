@@ -314,7 +314,7 @@ mechanism.
 
 ---
 
-## Removing content: `POST /v1/forget` — purge + blacklist
+## Removing content: `POST /v1/forget` — purge + blacklist { #post-v1forget--purge--blacklist }
 
 The upstream's "delete this / never index this" control. **Destructive.** It
 atomically (a) permanently purges matching pages from the index and (b) adds a

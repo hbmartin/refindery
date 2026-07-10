@@ -217,14 +217,14 @@ class HueyJobQueue:
             return None
 
         now = self._clock.now()
-        lease_until = now + timedelta(minutes=self._settings.lease_minutes)
+        lease_timeout_s = self._settings.lease_minutes * 60.0
+        timeout_s = min(
+            self._settings.handler_timeout_s or lease_timeout_s,
+            lease_timeout_s,
+        )
+        lease_until = now + timedelta(seconds=timeout_s)
         await self._store.mark_job_running(
             job_id=job.id, lease_until=lease_until, now=now
-        )
-        timeout_s = (
-            self._settings.handler_timeout_s
-            if self._settings.handler_timeout_s is not None
-            else self._settings.lease_minutes * 60.0
         )
         lease_timeout = asyncio.timeout(timeout_s)
         try:

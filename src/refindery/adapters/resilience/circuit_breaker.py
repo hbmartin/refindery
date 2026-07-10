@@ -119,6 +119,17 @@ class CircuitBreaker:
         ):
             self._open()
 
+    def record_cancellation(self) -> None:
+        """Release a cancelled half-open probe by restarting its cooldown.
+
+        Cancellation does not imply a provider failure while the breaker is
+        closed.  A cancelled half-open probe must nevertheless leave that
+        state, otherwise its in-flight flag would reject every future call.
+        """
+        if self._state is BreakerState.HALF_OPEN and self._probe_inflight:
+            self._probe_inflight = False
+            self._open()
+
     def _open(self) -> None:
         self._opened_at = self._clock.now()
         self._transition(BreakerState.OPEN)

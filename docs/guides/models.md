@@ -7,7 +7,7 @@ switching models is a register-and-backfill operation, never a relabel.
 
 ## The lifecycle
 
-```
+```text
 register ──▶ backfill (dry-run → confirm) ──▶ activate ──▶ (retire)
 registered      backfilling                    ready
 ```

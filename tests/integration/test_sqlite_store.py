@@ -148,6 +148,29 @@ async def test_chunks_replace_and_hydrate_ordered(store):
     assert await store.get_chunks([chunks[2].id]) == []
 
 
+async def test_get_chunks_batches_and_preserves_duplicate_order(store):
+    page = _page()
+    await store.insert_page(page)
+    chunks = [
+        Chunk(
+            id=new_chunk_id(),
+            page_id=page.id,
+            ordinal=i,
+            text=f"chunk {i}",
+            token_count=3,
+            char_start=i * 10,
+            char_end=i * 10 + 8,
+        )
+        for i in range(1_001)
+    ]
+    await store.replace_chunks(page_id=page.id, chunks=chunks)
+    requested = [chunks[-1].id, *[chunk.id for chunk in chunks], chunks[-1].id]
+
+    got = await store.get_chunks(requested)
+
+    assert [chunk.id for chunk in got] == requested
+
+
 async def test_page_vectors_upsert(store):
     page = _page()
     await store.insert_page(page)

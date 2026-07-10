@@ -22,7 +22,7 @@ def _breaker(
     )
 
 
-def test_stays_closed_below_threshold():
+def test_stays_closed_below_threshold() -> None:
     breaker = _breaker(FakeClock())
     breaker.record_failure()
     breaker.record_failure()
@@ -30,7 +30,7 @@ def test_stays_closed_below_threshold():
     breaker.check()  # does not raise
 
 
-def test_opens_at_threshold_and_fast_fails():
+def test_opens_at_threshold_and_fast_fails() -> None:
     breaker = _breaker(FakeClock())
     for _ in range(3):
         breaker.record_failure()
@@ -41,7 +41,7 @@ def test_opens_at_threshold_and_fast_fails():
     assert 0 < excinfo.value.retry_after_s <= 30.0
 
 
-def test_success_resets_consecutive_failures():
+def test_success_resets_consecutive_failures() -> None:
     breaker = _breaker(FakeClock())
     breaker.record_failure()
     breaker.record_failure()
@@ -51,7 +51,7 @@ def test_success_resets_consecutive_failures():
     assert breaker.state is BreakerState.CLOSED
 
 
-def test_cooldown_admits_exactly_one_probe():
+def test_cooldown_admits_exactly_one_probe() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
@@ -63,7 +63,7 @@ def test_cooldown_admits_exactly_one_probe():
         breaker.check()  # concurrent call during probe
 
 
-def test_probe_success_closes():
+def test_probe_success_closes() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
@@ -75,7 +75,7 @@ def test_probe_success_closes():
     breaker.check()  # fully closed again
 
 
-def test_probe_failure_reopens_with_fresh_cooldown():
+def test_probe_failure_reopens_with_fresh_cooldown() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
@@ -92,7 +92,25 @@ def test_probe_failure_reopens_with_fresh_cooldown():
     assert breaker.state is BreakerState.HALF_OPEN
 
 
-def test_still_open_before_cooldown():
+def test_probe_cancellation_reopens_with_fresh_cooldown() -> None:
+    clock = FakeClock()
+    breaker = _breaker(clock)
+    for _ in range(3):
+        breaker.record_failure()
+    clock.advance(seconds=30.0)
+    breaker.check()
+
+    breaker.record_cancellation()
+
+    assert breaker.state is BreakerState.OPEN
+    with pytest.raises(ProviderUnavailableError):
+        breaker.check()
+    clock.advance(seconds=30.0)
+    breaker.check()
+    assert breaker.state is BreakerState.HALF_OPEN
+
+
+def test_still_open_before_cooldown() -> None:
     clock = FakeClock()
     breaker = _breaker(clock, cooldown=10.0)
     for _ in range(3):
@@ -103,7 +121,7 @@ def test_still_open_before_cooldown():
     assert excinfo.value.retry_after_s == pytest.approx(1.0)
 
 
-def test_registry_returns_one_breaker_per_name():
+def test_registry_returns_one_breaker_per_name() -> None:
     registry = BreakerRegistry(
         config=BreakerConfig(failure_threshold=3, cooldown_s=30.0), clock=FakeClock()
     )

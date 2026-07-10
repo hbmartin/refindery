@@ -40,7 +40,7 @@ uv run --env-file .env refindery serve
 | Area | Prefix | Guide |
 | --- | --- | --- |
 | Vector store & providers | `REFINDERY_VECTOR_STORE`, `REFINDERY_EMBEDDER__*`, `REFINDERY_RERANKER__*` | [Deployment profiles](deployment-profiles.md) |
-| Authentication | `REFINDERY_AUTH_TOKEN(S)` | [Authentication](auth.md) |
+| Authentication | `REFINDERY_AUTH_TOKEN`, `REFINDERY_AUTH_TOKENS` | [Authentication](auth.md) |
 | Ranking, chunking, jobs, clustering | `REFINDERY_CHUNKING__*`, `REFINDERY_JOBS__*`, `REFINDERY_CLUSTER__*`, `REFINDERY_SEARCH__*` | [Tuning](tuning.md) |
 | Entities | `REFINDERY_ENTITY__*`, `REFINDERY_LLM__*` | [Entities](../guides/entities.md) |
 | Logs, metrics, traces | `REFINDERY_OBSERVABILITY__*` | [Observability](observability.md) |

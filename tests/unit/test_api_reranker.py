@@ -13,7 +13,7 @@ from refindery.domain.ids import ChunkId
 class _StubRanker:
     def __init__(self, scores: list[float | None]) -> None:
         self._scores = scores
-        self.calls: list[dict] = []
+        self.calls: list[dict[str, object]] = []
 
     def rank(
         self, *, query: str, docs: list[str], doc_ids: list[str]
@@ -27,22 +27,24 @@ class _StubRanker:
         )
 
 
-def _reranker(monkeypatch, ranker: _StubRanker) -> ApiReranker:
+def _reranker(monkeypatch: pytest.MonkeyPatch, ranker: _StubRanker) -> ApiReranker:
     monkeypatch.setattr(api_module, "RerankersFactory", lambda *_a, **_k: ranker)
     return ApiReranker(provider="cohere", model="rerank-v3.5")
 
 
-def test_factory_returning_none_raises(monkeypatch):
+def test_factory_returning_none_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api_module, "RerankersFactory", lambda *_a, **_k: None)
     with pytest.raises(RuntimeError, match="could not build"):
         ApiReranker(provider="cohere", model="rerank-v3.5")
 
 
-def test_model_name_and_api_key_from_env(monkeypatch):
+def test_model_name_and_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COHERE_API_KEY", "env-key")
-    captured: dict = {}
+    captured: dict[str, object] = {}
 
-    def factory(model, *, model_type, api_key, verbose) -> _StubRanker:
+    def factory(
+        model: str, *, model_type: str, api_key: str, verbose: bool
+    ) -> _StubRanker:
         captured.update(model=model, model_type=model_type, api_key=api_key)
         return _StubRanker([])
 
@@ -56,14 +58,18 @@ def test_model_name_and_api_key_from_env(monkeypatch):
     }
 
 
-async def test_empty_candidates_short_circuit(monkeypatch):
+async def test_empty_candidates_short_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     ranker = _StubRanker([])
     reranker = _reranker(monkeypatch, ranker)
     assert await reranker.rerank(query="q", candidates=[]) == []
     assert ranker.calls == []
 
 
-async def test_scores_map_and_none_becomes_zero(monkeypatch):
+async def test_scores_map_and_none_becomes_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     ranker = _StubRanker([0.9, None])
     reranker = _reranker(monkeypatch, ranker)
     scores = await reranker.rerank(
@@ -78,7 +84,7 @@ async def test_scores_map_and_none_becomes_zero(monkeypatch):
     assert ranker.calls[0]["docs"] == ["first", "second"]
 
 
-async def test_provider_errors_propagate(monkeypatch):
+async def test_provider_errors_propagate(monkeypatch: pytest.MonkeyPatch) -> None:
     class _BrokenRanker:
         def rank(self, **_kwargs) -> SimpleNamespace:
             msg = "api down"

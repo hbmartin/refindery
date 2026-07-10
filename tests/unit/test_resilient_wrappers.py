@@ -39,6 +39,7 @@ def _breaker(*, threshold: int = 3) -> CircuitBreaker:
 class _StubEmbedder:
     def __init__(self, *, fail: Exception | None = None, hang: bool = False) -> None:
         self.calls = 0
+        self.started = asyncio.Event()
         self._fail = fail
         self._hang = hang
 
@@ -56,6 +57,7 @@ class _StubEmbedder:
 
     async def embed_documents(self, texts: list[str]) -> list[np.ndarray]:
         self.calls += 1
+        self.started.set()
         if self._hang:
             await asyncio.Event().wait()
         if self._fail is not None:
@@ -116,6 +118,29 @@ async def test_timeout_counts_as_breaker_failure():
         await wrapper.embed_documents(["a"])
     assert breaker.state is BreakerState.OPEN
     assert inner.calls == 2
+
+
+async def test_cancelled_half_open_probe_reopens_breaker():
+    clock = FakeClock()
+    breaker = CircuitBreaker(
+        name="embed:test",
+        config=BreakerConfig(failure_threshold=1, cooldown_s=30.0),
+        clock=clock,
+    )
+    breaker.record_failure()
+    clock.advance(seconds=30.0)
+    inner = _StubEmbedder(hang=True)
+    wrapper = _embedder(inner, breaker)
+    task = asyncio.create_task(wrapper.embed_documents(["a"]))
+    await inner.started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert breaker.state is BreakerState.OPEN
+    with pytest.raises(ProviderUnavailableError):
+        await wrapper.embed_documents(["a"])
 
 
 async def test_dimension_mismatch_is_not_retried_and_keeps_breaker_closed():

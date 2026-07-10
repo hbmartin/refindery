@@ -131,7 +131,7 @@ async def add_page(
                 status_code=status.HTTP_403_FORBIDDEN,
                 content=blocked.model_dump(mode="json"),
             )
-        case _ as unreachable:
+        case _ as unreachable:  # pragma: no cover — statically unreachable
             assert_never(unreachable)
 
 
@@ -191,7 +191,7 @@ async def add_pages_batch(
                 results.append(
                     IngestBatchBlacklistedResult(index=index, pattern=pattern)
                 )
-            case _ as unreachable:
+            case _ as unreachable:  # pragma: no cover — statically unreachable
                 assert_never(unreachable)
     return IngestBatchResponse(results=results)
 

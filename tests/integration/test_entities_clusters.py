@@ -221,6 +221,26 @@ class TestClusterRun:
                     vector=vector.tobytes(),
                 )
 
+    async def test_get_cluster_run_round_trips_or_returns_none(self, container):
+        run = ClusterRun(
+            id="r-get",
+            trigger="manual",
+            algorithm="hdbscan",
+            params={"min_cluster_size": 5},
+            started_at=NOW,
+            finished_at=NOW,
+            duration_ms=1_234,
+            n_pages=40,
+            n_clusters=2,
+            n_noise=3,
+        )
+        await container.store.insert_cluster_run(run)
+        await container.store.finalize_cluster_run(run)
+
+        got = await container.store.get_cluster_run(run_id="r-get")
+        assert got == run
+        assert await container.store.get_cluster_run(run_id="missing") is None
+
     async def test_run_creates_stable_clusters(self, container):
         container.clustering._settings = ClusterSettings(min_pages=30)  # noqa: SLF001
         blobs = [_blob_pages(20, 0), _blob_pages(20, 7)]

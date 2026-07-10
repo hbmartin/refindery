@@ -29,7 +29,7 @@ async def healthz() -> dict[str, str]:
 async def readyz(
     response: Response,
     container: Annotated[Container, Depends(get_container)],
-) -> dict[str, str]:
+) -> dict[str, object]:
     """Dependencies are usable: metadata store reachable, a model is active."""
     try:
         active = await container.store.get_active_model()
@@ -39,4 +39,7 @@ async def readyz(
     if active is None:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {"status": "no active embedding model"}
-    return {"status": "ready"}
+    return {
+        "status": "ready",
+        "capabilities": {"batch_ingest": True, "batch_status": True},
+    }

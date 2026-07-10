@@ -82,6 +82,44 @@ async def test_retries_transient_error_then_succeeds(httpx_mock):
         await client.aclose()
 
 
+async def test_retries_rate_limit_then_succeeds(httpx_mock):
+    httpx_mock.add_response(url=COMPLETIONS, status_code=429)
+    httpx_mock.add_response(url=COMPLETIONS, json=OK_BODY)
+    client = _client(
+        retry=RetryPolicy(attempts=2, base_delay_s=0.001, max_delay_s=0.002)
+    )
+    try:
+        assert await client.complete("p") == "labelled"
+    finally:
+        await client.aclose()
+
+
+async def test_transport_timeout_retries_then_exhausts(httpx_mock):
+    httpx_mock.add_exception(httpx.ReadTimeout("timed out"), is_reusable=True)
+    client = _client(
+        retry=RetryPolicy(attempts=2, base_delay_s=0.001, max_delay_s=0.002)
+    )
+    try:
+        with pytest.raises(httpx.ReadTimeout, match="timed out"):
+            await client.complete("p")
+    finally:
+        await client.aclose()
+    assert len(httpx_mock.get_requests()) == 2
+
+
+async def test_non_retryable_client_error_is_attempted_once(httpx_mock):
+    httpx_mock.add_response(url=COMPLETIONS, status_code=400)
+    client = _client(
+        retry=RetryPolicy(attempts=3, base_delay_s=0.001, max_delay_s=0.002)
+    )
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.complete("p")
+    finally:
+        await client.aclose()
+    assert len(httpx_mock.get_requests()) == 1
+
+
 async def test_breaker_opens_and_fast_fails(httpx_mock):
     httpx_mock.add_response(url=COMPLETIONS, status_code=500)
     httpx_mock.add_response(url=COMPLETIONS, status_code=500)

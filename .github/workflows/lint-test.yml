@@ -14,14 +14,6 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.13"]
-    services:
-      qdrant:
-        image: qdrant/qdrant:v1.18.2
-        ports:
-          - 6333:6333
-          - 6334:6334
-    env:
-      QDRANT_URL: http://localhost:6333
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
     - name: Set up Python ${{ matrix.python-version }}
@@ -49,7 +41,7 @@ jobs:
       run: uv run pyroma --min 10 .
     - run: uv run deptry src
     - name: Run tests with coverage
-      run: uv run pytest --cov=refindery --cov-report=lcov --cov-report=html
+      run: uv run pytest -m "not external and not qdrant" --cov=refindery --cov-report=lcov --cov-report=html
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
       with:
@@ -61,3 +53,43 @@ jobs:
         name: coverage-report-python-${{ matrix.python-version }}
         path: htmlcov/
         retention-days: 30
+
+  lancedb-conformance:
+    name: LanceDB conformance (daemon-free)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: "3.13"
+    - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      with:
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+    - run: uv sync --locked --all-groups
+    - name: Run LanceDB conformance without daemon configuration
+      run: uv run pytest -m "not qdrant" tests/conformance
+
+  qdrant-conformance:
+    name: Qdrant conformance
+    runs-on: ubuntu-latest
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.18.2
+        ports:
+          - 6333:6333
+          - 6334:6334
+    env:
+      QDRANT_URL: http://localhost:6333
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: "3.13"
+    - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      with:
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+    - run: uv sync --locked --all-groups
+    - name: Run Qdrant conformance
+      run: uv run pytest -m qdrant tests/conformance

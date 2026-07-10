@@ -85,9 +85,11 @@ dev = [
     "pytest-asyncio>=1.0.0",
     "pytest-cov>=7.1.0",
     "pytest-httpx>=0.36.2",
+    "pip-audit>=2.10.0",
     "ruff>=0.15.20",
     "testcontainers>=4.14.2",
     "ty>=0.0.57",
+    "twine>=6.2.0",
 ]
 docs = [
     "zensical>=0.0.47",

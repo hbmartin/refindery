@@ -12,6 +12,8 @@ focuses on the retrieval and admin surface. `write`-scoped routes are marked �
 
 ```text
 POST   /v1/pages                      ingest (body_extracted XOR body_html; neither → fetch)  🔒
+POST   /v1/pages/batch                ingest up to 100 pages with per-item outcomes           🔒
+POST   /v1/pages/status/batch         status for up to 500 distinct page IDs
 GET    /v1/pages/{id}                 full body_text + metadata
 GET    /v1/pages/{id}/chunks          ordered chunk text, token counts, and body offsets
 GET    /v1/pages/{id}/status          queued | indexing | indexed | failed | dead
@@ -98,8 +100,8 @@ or canonical form.
 ## Health
 
 - `GET /healthz` — liveness, unauthenticated.
-- `GET /readyz` — readiness, unauthenticated; `503` until the metadata store is
-  reachable and an embedding model is active.
+- `GET /readyz` — readiness and additive API capability flags, unauthenticated;
+  `503` until the metadata store is reachable and an embedding model is active.
 - `GET /metrics` — Prometheus, bearer required. See [Observability](../configuration/observability.md).
 
 ## Related

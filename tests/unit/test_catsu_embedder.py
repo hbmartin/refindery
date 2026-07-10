@@ -1,9 +1,11 @@
 """CatsuEmbedder tests with a stubbed catsu client (no network)."""
 
 from dataclasses import dataclass, field
+from typing import cast
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from refindery.adapters.embedding.catsu_embedder import (
     CatsuEmbedder,
@@ -93,3 +95,16 @@ async def test_provider_errors_propagate():
     stub = _StubCatsuClient(fail=ValueError("rate limited"))
     with pytest.raises(ValueError, match="rate limited"):
         await _embedder(stub).embed_documents(["a"])
+
+
+async def test_malformed_provider_response_is_rejected():
+    malformed = cast("list[list[float]]", [["not-a-number"]])
+    stub = _StubCatsuClient(embeddings=malformed)
+    with pytest.raises(ValidationError):
+        await _embedder(stub).embed_query("q")
+
+
+async def test_provider_result_count_must_match_inputs():
+    stub = _StubCatsuClient(embeddings=[[1.0, 2.0, 3.0]])
+    with pytest.raises(RuntimeError, match="1 vectors for 2 inputs"):
+        await _embedder(stub).embed_documents(["a", "b"])

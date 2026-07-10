@@ -123,7 +123,27 @@ must carry an offset.
 
 ---
 
-## The core endpoint: `POST /v1/pages`
+## Ingest endpoints
+
+### Batch ingest: `POST /v1/pages/batch`
+
+Send `{"pages": [...]}` with 1–100 items. Each item uses the same
+`IngestPageRequest` schema as the single endpoint. A valid envelope returns
+`200` and an ordered `results` array; inspect each result's `outcome`:
+
+- `accepted`: `index`, `page_id`, `status: "queued"`
+- `revisit`: `index`, `page_id`, current `status`, `revisit: true`, and
+  `content_hash_differs`
+- `blacklisted`: `index`, `error: "blacklisted"`, and matched `pattern`
+- `rejected`: `index` and validation `detail`
+
+Items are processed independently and in input order. This makes repeated
+canonical URLs deterministic: the first is accepted or revisited and later
+occurrences revisit the same page. Retrying a batch is safe under the existing
+canonical-URL idempotency guarantee. Empty batches and batches over 100 items
+return `422`; authentication and write-scope requirements match single ingest.
+
+### Single ingest: `POST /v1/pages`
 
 The single entry point for adding a page. Everything an upstream source does
 centers on this call. Canonical URLs are deduplicated: the first request creates
@@ -292,6 +312,24 @@ Response (`PageStatusResponse`):
   }
 }
 ```
+
+### Batch status: `POST /v1/pages/status/batch`
+
+Send `{"page_ids": [...]}` with 1–500 IDs. The response is
+`{"results": [...]}`. Known pages include `found: true` plus the same
+`page_id`, `status`, `last_error`, and `features` fields as the single status
+endpoint. Unknown or expired IDs return `{"page_id": "...", "found": false}`
+instead of failing the request. Duplicate IDs are collapsed while preserving
+first-seen order. Empty requests and requests over 500 IDs return `422`.
+
+Batch-capable servers advertise both routes from readiness:
+
+```json
+{"status":"ready","capabilities":{"batch_ingest":true,"batch_status":true}}
+```
+
+Clients should treat missing flags as unsupported and may permanently fall
+back to the single-item routes if a batch request receives `404` or `405`.
 
 - `status` — the page lifecycle value (below). This is the field to poll on.
 - `last_error` — populated only when `status` is `failed` or `dead`; carries the

@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from refindery.adapters.observability.metrics import ingest_pages_total
 from refindery.adapters.observability.otel import span
@@ -13,11 +14,21 @@ from refindery.api.schemas import (
     BlacklistedResponse,
     FeatureStatus,
     IngestAcceptedResponse,
+    IngestBatchAcceptedResult,
+    IngestBatchBlacklistedResult,
+    IngestBatchRejectedResult,
+    IngestBatchRequest,
+    IngestBatchResponse,
+    IngestBatchRevisitResult,
     IngestPageRequest,
     IngestRevisitResponse,
     PageChunkResponse,
     PageChunksResponse,
     PageResponse,
+    PageStatusBatchFoundResult,
+    PageStatusBatchMissingResult,
+    PageStatusBatchRequest,
+    PageStatusBatchResponse,
     PageStatusFeatures,
     PageStatusResponse,
 )
@@ -27,6 +38,7 @@ from refindery.domain.errors import BodyConflictError, ExtractionUnavailableErro
 from refindery.domain.ids import PageId
 from refindery.domain.models import (
     IngestBlacklisted,
+    IngestOutcome,
     IngestQueued,
     IngestRevisit,
     JobKind,
@@ -35,6 +47,23 @@ from refindery.domain.models import (
 )
 
 router = APIRouter(prefix="/v1/pages", tags=["pages"])
+
+
+async def _ingest_page(
+    request: IngestPageRequest, container: Container
+) -> IngestOutcome:
+    """Map a validated API request to the shared ingest service."""
+    return await container.ingest.ingest(
+        IngestRequest(
+            url=request.url,
+            title=request.title,
+            body_extracted=request.body_extracted,
+            body_html=request.body_html,
+            fetched_at=request.fetched_at,
+            source=request.source,
+            metadata=request.metadata,
+        )
+    )
 
 
 @router.post(
@@ -60,17 +89,7 @@ async def add_page(
     """Single ingest endpoint (manual adds included)."""
     try:
         with span("ingest"):
-            outcome = await container.ingest.ingest(
-                IngestRequest(
-                    url=request.url,
-                    title=request.title,
-                    body_extracted=request.body_extracted,
-                    body_html=request.body_html,
-                    fetched_at=request.fetched_at,
-                    source=request.source,
-                    metadata=request.metadata,
-                )
-            )
+            outcome = await _ingest_page(request, container)
     except BodyConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
@@ -112,6 +131,112 @@ async def add_page(
                 status_code=status.HTTP_403_FORBIDDEN,
                 content=blocked.model_dump(mode="json"),
             )
+
+
+@router.post(
+    "/batch",
+    operation_id="add_pages_batch",
+    dependencies=[Depends(require_write)],
+    summary="Ingest up to 100 pages",
+    description=(
+        "Validate and ingest each page independently. Results preserve input "
+        "order; malformed or blacklisted items do not prevent other items."
+    ),
+)
+async def add_pages_batch(
+    request: IngestBatchRequest,
+    container: Annotated[Container, Depends(get_container)],
+) -> IngestBatchResponse:
+    """Batch ingest with per-item outcomes and deterministic duplicate handling."""
+    results: list[
+        IngestBatchAcceptedResult
+        | IngestBatchRevisitResult
+        | IngestBatchBlacklistedResult
+        | IngestBatchRejectedResult
+    ] = []
+    for index, item in enumerate(request.pages):
+        try:
+            page_request = IngestPageRequest.model_validate(item)
+            with span("ingest.batch.item"):
+                outcome = await _ingest_page(page_request, container)
+        except (ValidationError, BodyConflictError, ValueError) as exc:
+            results.append(IngestBatchRejectedResult(index=index, detail=str(exc)))
+            continue
+        except ExtractionUnavailableError as exc:
+            results.append(IngestBatchRejectedResult(index=index, detail=str(exc)))
+            continue
+
+        match outcome:
+            case IngestQueued(page_id=page_id):
+                ingest_pages_total.labels(outcome="queued").inc()
+                results.append(IngestBatchAcceptedResult(index=index, page_id=page_id))
+            case IngestRevisit(
+                page_id=page_id,
+                status=page_status,
+                content_hash_differs=differs,
+            ):
+                ingest_pages_total.labels(outcome="revisit").inc()
+                results.append(
+                    IngestBatchRevisitResult(
+                        index=index,
+                        page_id=page_id,
+                        status=page_status,
+                        content_hash_differs=differs,
+                    )
+                )
+            case IngestBlacklisted(pattern=pattern):
+                ingest_pages_total.labels(outcome="blacklisted").inc()
+                results.append(
+                    IngestBatchBlacklistedResult(index=index, pattern=pattern)
+                )
+    return IngestBatchResponse(results=results)
+
+
+async def _page_status(page: Page, container: Container) -> PageStatusResponse:
+    """Build the shared status representation for a known page."""
+    last_error: str | None = None
+    if page.status in {PageStatus.FAILED, PageStatus.DEAD}:
+        job = await container.store.latest_job_for_page(page_id=page.id)
+        last_error = None if job is None else job.last_error
+    entity_job = await container.store.latest_job_for_page(
+        page_id=page.id, kind=JobKind.EXTRACT_ENTITIES
+    )
+    entities = (
+        FeatureStatus(status="not_queued", last_error=None)
+        if entity_job is None
+        else FeatureStatus(status=entity_job.status, last_error=entity_job.last_error)
+    )
+    return PageStatusResponse(
+        page_id=page.id,
+        status=page.status,
+        last_error=last_error,
+        features=PageStatusFeatures(entities=entities),
+    )
+
+
+@router.post(
+    "/status/batch",
+    operation_id="page_status_batch",
+    summary="Fetch status for up to 500 pages",
+    description=(
+        "Return one status per distinct requested page id. Unknown ids are "
+        "reported with found=false instead of failing the batch."
+    ),
+)
+async def page_status_batch(
+    request: PageStatusBatchRequest,
+    container: Annotated[Container, Depends(get_container)],
+) -> PageStatusBatchResponse:
+    """Batch lifecycle status, deduplicating ids while preserving order."""
+    results: list[PageStatusBatchFoundResult | PageStatusBatchMissingResult] = []
+    for page_id in dict.fromkeys(request.page_ids):
+        page = await container.store.get_page(PageId(page_id))
+        if page is None:
+            results.append(PageStatusBatchMissingResult(page_id=page_id))
+            continue
+        current = await _page_status(page, container)
+        results.append(PageStatusBatchFoundResult(**current.model_dump(mode="python")))
+    return PageStatusBatchResponse(results=results)
 
 
 async def _require_page(container: Container, page_id: str) -> Page:
@@ -195,21 +320,4 @@ async def page_status(
 ) -> PageStatusResponse:
     """queued|indexing|indexed|failed|dead, with last_error when failed."""
     page = await _require_page(container, page_id)
-    last_error: str | None = None
-    if page.status in {PageStatus.FAILED, PageStatus.DEAD}:
-        job = await container.store.latest_job_for_page(page_id=page.id)
-        last_error = None if job is None else job.last_error
-    entity_job = await container.store.latest_job_for_page(
-        page_id=page.id, kind=JobKind.EXTRACT_ENTITIES
-    )
-    entities = (
-        FeatureStatus(status="not_queued", last_error=None)
-        if entity_job is None
-        else FeatureStatus(status=entity_job.status, last_error=entity_job.last_error)
-    )
-    return PageStatusResponse(
-        page_id=page.id,
-        status=page.status,
-        last_error=last_error,
-        features=PageStatusFeatures(entities=entities),
-    )
+    return await _page_status(page, container)

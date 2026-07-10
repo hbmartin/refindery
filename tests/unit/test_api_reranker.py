@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 import refindery.adapters.reranking.api as api_module
 from refindery.adapters.reranking.api import ApiReranker
@@ -95,6 +96,25 @@ async def test_provider_errors_propagate(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     reranker = ApiReranker(provider="cohere", model="rerank-v3.5")
     with pytest.raises(ConnectionError, match="api down"):
+        await reranker.rerank(
+            query="q", candidates=[RerankCandidate(chunk_id=ChunkId("c1"), text="t")]
+        )
+
+
+async def test_malformed_provider_response_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _MalformedRanker:
+        def rank(self, **_kwargs) -> SimpleNamespace:
+            return SimpleNamespace(
+                results=[SimpleNamespace(document=SimpleNamespace(), score="bad")]
+            )
+
+    monkeypatch.setattr(
+        api_module, "RerankersFactory", lambda *_a, **_k: _MalformedRanker()
+    )
+    reranker = ApiReranker(provider="cohere", model="rerank-v3.5")
+    with pytest.raises(ValidationError):
         await reranker.rerank(
             query="q", candidates=[RerankCandidate(chunk_id=ChunkId("c1"), text="t")]
         )

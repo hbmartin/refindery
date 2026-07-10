@@ -156,9 +156,10 @@ async def test_dimension_mismatch_is_not_retried_and_keeps_breaker_closed():
 
 
 class _StubReranker:
-    def __init__(self, *, fail: Exception | None = None) -> None:
+    def __init__(self, *, fail: Exception | None = None, hang: bool = False) -> None:
         self.calls = 0
         self._fail = fail
+        self._hang = hang
 
     @property
     def model_name(self) -> str:
@@ -171,6 +172,8 @@ class _StubReranker:
         candidates: list[RerankCandidate],
     ) -> list[RerankScore]:
         self.calls += 1
+        if self._hang:
+            await asyncio.Event().wait()
         if self._fail is not None:
             raise self._fail
         return [RerankScore(chunk_id=c.chunk_id, score=0.5) for c in candidates]
@@ -205,3 +208,21 @@ async def test_reranker_delegates_and_opens_on_failures():
         await wrapper.rerank(
             query="q", candidates=[RerankCandidate(chunk_id=ChunkId("c1"), text="t")]
         )
+
+
+async def test_reranker_timeout_retries_and_opens_breaker():
+    breaker = _breaker(threshold=2)
+    inner = _StubReranker(hang=True)
+    wrapper = ResilientReranker(
+        inner=inner,
+        breaker=breaker,
+        policy=POLICY,
+        timeout_s=0.01,
+        sleep=_no_sleep,
+    )
+    with pytest.raises(TimeoutError):
+        await wrapper.rerank(
+            query="q", candidates=[RerankCandidate(chunk_id=ChunkId("c1"), text="t")]
+        )
+    assert inner.calls == 2
+    assert breaker.state is BreakerState.OPEN

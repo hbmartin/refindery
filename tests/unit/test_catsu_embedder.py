@@ -98,7 +98,8 @@ async def test_provider_errors_propagate():
 
 
 @pytest.mark.parametrize(
-    "value", ["not-a-number", float("nan"), float("inf"), float("-inf")]
+    "value",
+    ["not-a-number", float("nan"), float("inf"), float("-inf"), 1e100, -1e100],
 )
 async def test_malformed_provider_response_is_rejected(value: object) -> None:
     malformed = cast("list[list[float]]", [[value]])

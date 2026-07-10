@@ -7,11 +7,12 @@ against ``dim`` on every call.
 
 import numpy as np
 from catsu import Client
-from pydantic import BaseModel, ConfigDict, FiniteFloat
+from pydantic import BaseModel, ConfigDict, FiniteFloat, field_validator
 
 from refindery.domain.rollup import Vector
 
 _PROVIDER_ALIASES = {"voyage": "voyageai"}
+_FLOAT32_MAX = float(np.finfo(np.float32).max)
 
 
 class _EmbeddingResponse(BaseModel):
@@ -20,6 +21,16 @@ class _EmbeddingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     embeddings: list[list[FiniteFloat]]
+
+    @field_validator("embeddings")
+    @classmethod
+    def _values_fit_float32(cls, embeddings: list[list[float]]) -> list[list[float]]:
+        for vector in embeddings:
+            for value in vector:
+                if abs(value) > _FLOAT32_MAX:
+                    msg = "embedding values must fit in float32"
+                    raise ValueError(msg)
+        return embeddings
 
 
 class EmbeddingDimensionMismatchError(RuntimeError):

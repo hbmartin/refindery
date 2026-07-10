@@ -426,6 +426,10 @@ class MetadataStore(Protocol):
         """List cluster runs newest first."""
         ...
 
+    async def get_cluster_run(self, *, run_id: str) -> ClusterRun | None:
+        """Fetch one cluster run by id."""
+        ...
+
     async def insert_cluster_projection(
         self,
         *,

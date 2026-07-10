@@ -106,8 +106,7 @@ async def cluster_projection(
     run_id: Annotated[str, Query(min_length=1)],
 ) -> ClusterProjectionResponse:
     """Return page coordinates for a persisted clustering run."""
-    runs = await container.store.list_cluster_runs(limit=1_000)
-    if run_id not in {run.id for run in runs}:
+    if await container.store.get_cluster_run(run_id=run_id) is None:
         raise HTTPException(status_code=404, detail="cluster run not found")
     points, _ = await container.store.get_cluster_projection(run_id=run_id)
     return ClusterProjectionResponse(

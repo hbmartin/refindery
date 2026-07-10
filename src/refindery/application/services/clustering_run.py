@@ -190,12 +190,9 @@ class ClusterRunService:
             )
         ]
         centroids: list[ClusterProjectionCentroid] = []
+        labels_array = np.asarray(labels)
         for label, cluster_id in outcome.ids_by_label.items():
-            member_coordinates = [
-                coordinates
-                for coordinates, point_label in zip(projection, labels, strict=True)
-                if point_label == label
-            ]
+            member_coordinates = projection[labels_array == label]
             centroid = np.mean(member_coordinates, axis=0)
             centroids.append(
                 ClusterProjectionCentroid(

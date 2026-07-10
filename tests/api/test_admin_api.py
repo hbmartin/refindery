@@ -1,11 +1,13 @@
 """Web UI administration API contracts."""
 
 import asyncio
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 
 from refindery.api.app import create_app
+from refindery.domain.models import ClusterRun
 from tests.fakes.container import (
     TEST_READ_TOKEN,
     TEST_TOKEN,
@@ -110,3 +112,27 @@ async def test_replay_is_accepted_and_unknown_resources_are_404(admin_harness):
     assert missing_query.status_code == 404
     missing_model = await client.get("/v1/models/missing/backfill", headers=FULL)
     assert missing_model.status_code == 404
+
+
+async def test_cluster_projection_distinguishes_empty_run_from_missing(admin_harness):
+    """A persisted run remains addressable before it has projection points."""
+    client, container, _ = admin_harness
+    run = ClusterRun(
+        id="empty-run",
+        trigger="manual",
+        algorithm="hdbscan",
+        params={},
+        started_at=datetime(2026, 7, 10, tzinfo=UTC),
+    )
+    await container.store.insert_cluster_run(run)
+
+    empty = await client.get(
+        "/v1/clusters/projection", params={"run_id": run.id}, headers=READ
+    )
+    assert empty.status_code == 200
+    assert empty.json() == {"run_id": run.id, "points": []}
+
+    missing = await client.get(
+        "/v1/clusters/projection", params={"run_id": "missing"}, headers=READ
+    )
+    assert missing.status_code == 404

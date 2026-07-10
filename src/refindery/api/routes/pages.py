@@ -1,6 +1,6 @@
 """Page ingest and read endpoints."""
 
-from typing import Annotated
+from typing import Annotated, assert_never
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -131,6 +131,8 @@ async def add_page(
                 status_code=status.HTTP_403_FORBIDDEN,
                 content=blocked.model_dump(mode="json"),
             )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 @router.post(
@@ -189,6 +191,8 @@ async def add_pages_batch(
                 results.append(
                     IngestBatchBlacklistedResult(index=index, pattern=pattern)
                 )
+            case _ as unreachable:
+                assert_never(unreachable)
     return IngestBatchResponse(results=results)
 
 
@@ -235,7 +239,14 @@ async def page_status_batch(
             results.append(PageStatusBatchMissingResult(page_id=page_id))
             continue
         current = await _page_status(page, container)
-        results.append(PageStatusBatchFoundResult(**current.model_dump(mode="python")))
+        results.append(
+            PageStatusBatchFoundResult(
+                page_id=current.page_id,
+                status=current.status,
+                last_error=current.last_error,
+                features=current.features,
+            )
+        )
     return PageStatusBatchResponse(results=results)
 
 

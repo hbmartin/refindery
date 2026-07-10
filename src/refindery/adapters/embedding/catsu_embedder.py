@@ -7,7 +7,7 @@ against ``dim`` on every call.
 
 import numpy as np
 from catsu import Client
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, FiniteFloat
 
 from refindery.domain.rollup import Vector
 
@@ -19,7 +19,7 @@ class _EmbeddingResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    embeddings: list[list[float]]
+    embeddings: list[list[FiniteFloat]]
 
 
 class EmbeddingDimensionMismatchError(RuntimeError):

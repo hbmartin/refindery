@@ -1084,14 +1084,17 @@ class SqliteMetadataStore(_EntityClusterMixin):
         """Hydrate chunks by id; missing ids dropped."""
         if not chunk_ids:
             return []
-        placeholders = ",".join("?" for _ in chunk_ids)
-        query = (
-            "SELECT id, page_id, ordinal, text, token_count, char_start, char_end "  # noqa: S608
-            f"FROM chunks WHERE id IN ({placeholders})"
-        )
-        cursor = await self.conn.execute(query, chunk_ids)
-        rows = await cursor.fetchall()
-        by_id = {row["id"]: _chunk_from_row(row) for row in rows}
+        unique_ids = list(dict.fromkeys(chunk_ids))
+        by_id: dict[str, Chunk] = {}
+        for id_batch in batched(unique_ids, _SQLITE_VARIABLE_BATCH_SIZE, strict=False):
+            placeholders = ",".join("?" for _ in id_batch)
+            query = (  # safe: placeholders contain only generated question marks
+                f"SELECT id, page_id, ordinal, text, token_count, char_start, "  # noqa: S608
+                f"char_end FROM chunks WHERE id IN ({placeholders})"
+            )
+            cursor = await self.conn.execute(query, id_batch)
+            rows = await cursor.fetchall()
+            by_id.update({row["id"]: _chunk_from_row(row) for row in rows})
         return [by_id[cid] for cid in chunk_ids if cid in by_id]
 
     async def upsert_page_vector(

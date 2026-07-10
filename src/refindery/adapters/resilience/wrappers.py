@@ -32,6 +32,42 @@ logger = logging.getLogger(__name__)
 _TRANSIENT_STATUS = frozenset({408, 429})
 
 
+def _record_cancellation(breaker: CircuitBreaker | None) -> None:
+    if breaker is not None:
+        breaker.record_cancellation()
+
+
+async def _guarded_attempt[T](
+    fn: Callable[[], Awaitable[T]],
+    *,
+    breaker: CircuitBreaker | None,
+    timeout_s: float,
+    retryable: Callable[[Exception], bool],
+    on_failure: Callable[[], None] | None,
+) -> T:
+    if breaker is not None:
+        breaker.check()
+    try:
+        result = await asyncio.wait_for(fn(), timeout=timeout_s)
+    except asyncio.CancelledError:
+        _record_cancellation(breaker)
+        raise
+    except ProviderUnavailableError:
+        raise
+    except Exception as exc:
+        if retryable(exc):
+            if breaker is not None:
+                breaker.record_failure()
+            if on_failure is not None:
+                on_failure()
+        elif breaker is not None:
+            breaker.record_success()
+        raise
+    if breaker is not None:
+        breaker.record_success()
+    return result
+
+
 def is_transient_http(exc: Exception) -> bool:
     """Whether an httpx-surfaced error is worth retrying / counting as outage."""
     if isinstance(exc, httpx.HTTPStatusError):
@@ -62,24 +98,13 @@ async def guarded_call[T](
     """Run ``fn`` under breaker admission, per-attempt timeout, and retry."""
 
     async def attempt() -> T:
-        if breaker is not None:
-            breaker.check()
-        try:
-            result = await asyncio.wait_for(fn(), timeout=timeout_s)
-        except ProviderUnavailableError:
-            raise
-        except Exception as exc:
-            if retryable(exc):
-                if breaker is not None:
-                    breaker.record_failure()
-                if on_failure is not None:
-                    on_failure()
-            elif breaker is not None:
-                breaker.record_success()
-            raise
-        if breaker is not None:
-            breaker.record_success()
-        return result
+        return await _guarded_attempt(
+            fn,
+            breaker=breaker,
+            timeout_s=timeout_s,
+            retryable=retryable,
+            on_failure=on_failure,
+        )
 
     return await call_with_retry(
         attempt, policy=policy, retryable=retryable, sleep=sleep

@@ -92,6 +92,24 @@ def test_probe_failure_reopens_with_fresh_cooldown():
     assert breaker.state is BreakerState.HALF_OPEN
 
 
+def test_probe_cancellation_reopens_with_fresh_cooldown():
+    clock = FakeClock()
+    breaker = _breaker(clock)
+    for _ in range(3):
+        breaker.record_failure()
+    clock.advance(seconds=30.0)
+    breaker.check()
+
+    breaker.record_cancellation()
+
+    assert breaker.state is BreakerState.OPEN
+    with pytest.raises(ProviderUnavailableError):
+        breaker.check()
+    clock.advance(seconds=30.0)
+    breaker.check()
+    assert breaker.state is BreakerState.HALF_OPEN
+
+
 def test_still_open_before_cooldown():
     clock = FakeClock()
     breaker = _breaker(clock, cooldown=10.0)

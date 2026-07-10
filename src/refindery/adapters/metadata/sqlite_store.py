@@ -179,6 +179,21 @@ def _cluster_from_row(row: sqlite3.Row) -> Cluster:
     )
 
 
+def _cluster_run_from_row(row: sqlite3.Row) -> ClusterRun:
+    return ClusterRun(
+        id=row["id"],
+        trigger=row["trigger_kind"],
+        algorithm=row["algorithm"],
+        params=json.loads(row["params"]),
+        started_at=datetime.fromisoformat(row["started_at"]),
+        finished_at=_dt(row["finished_at"]),
+        duration_ms=row["duration_ms"],
+        n_pages=row["n_pages"],
+        n_clusters=row["n_clusters"],
+        n_noise=row["n_noise"],
+    )
+
+
 class _EntityClusterMixin:
     """Entity + cluster methods of SqliteMetadataStore (split for readability)."""
 
@@ -720,22 +735,14 @@ class _EntityClusterMixin:
         cursor = await self.conn.execute(
             "SELECT * FROM cluster_runs ORDER BY started_at DESC LIMIT ?", (limit,)
         )
-        rows = await cursor.fetchall()
-        return [
-            ClusterRun(
-                id=row["id"],
-                trigger=row["trigger_kind"],
-                algorithm=row["algorithm"],
-                params=json.loads(row["params"]),
-                started_at=datetime.fromisoformat(row["started_at"]),
-                finished_at=_dt(row["finished_at"]),
-                duration_ms=row["duration_ms"],
-                n_pages=row["n_pages"],
-                n_clusters=row["n_clusters"],
-                n_noise=row["n_noise"],
-            )
-            for row in rows
-        ]
+        return [_cluster_run_from_row(row) for row in await cursor.fetchall()]
+
+    async def get_cluster_run(self, *, run_id: str) -> ClusterRun | None:
+        """Fetch one cluster run through its primary-key index."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM cluster_runs WHERE id = ?", (run_id,)
+        )
+        return _cluster_run_from_row(row) if (row := await cursor.fetchone()) else None
 
     async def insert_cluster_projection(
         self,

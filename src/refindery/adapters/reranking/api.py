@@ -7,7 +7,7 @@ and load lazily (LocalReranker) when installed.
 import asyncio
 import os
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, FiniteFloat
 from rerankers import Reranker as RerankersFactory
 
 from refindery.application.ports.reranker import RerankCandidate, RerankScore
@@ -26,7 +26,7 @@ class _RankedResult(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     document: _RankedDocument
-    score: float | None
+    score: FiniteFloat | None
 
 
 class _RankedResponse(BaseModel):

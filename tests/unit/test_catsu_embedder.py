@@ -97,8 +97,11 @@ async def test_provider_errors_propagate():
         await _embedder(stub).embed_documents(["a"])
 
 
-async def test_malformed_provider_response_is_rejected():
-    malformed = cast("list[list[float]]", [["not-a-number"]])
+@pytest.mark.parametrize(
+    "value", ["not-a-number", float("nan"), float("inf"), float("-inf")]
+)
+async def test_malformed_provider_response_is_rejected(value: object) -> None:
+    malformed = cast("list[list[float]]", [[value]])
     stub = _StubCatsuClient(embeddings=malformed)
     with pytest.raises(ValidationError):
         await _embedder(stub).embed_query("q")

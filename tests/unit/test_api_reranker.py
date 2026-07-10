@@ -118,3 +118,15 @@ async def test_malformed_provider_response_is_rejected(
         await reranker.rerank(
             query="q", candidates=[RerankCandidate(chunk_id=ChunkId("c1"), text="t")]
         )
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")])
+async def test_non_finite_provider_score_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, score: float
+) -> None:
+    ranker = _StubRanker([score])
+    reranker = _reranker(monkeypatch, ranker)
+    with pytest.raises(ValidationError):
+        await reranker.rerank(
+            query="q", candidates=[RerankCandidate(chunk_id=ChunkId("c1"), text="t")]
+        )

@@ -6,6 +6,7 @@ from refindery.adapters.chunking.chonkie_chunker import ChonkieChunker
 from refindery.adapters.clock import SystemClock
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
+from refindery.adapters.observability.metrics_history import MetricsSnapshotter
 from refindery.adapters.observability.query_log import DuckDbQueryLog
 from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.vector.lancedb_store import LanceDbVectorStore
@@ -14,6 +15,7 @@ from refindery.application.ports.cluster_engine import (
     ClusterFitResult,
     ClusterParams,
 )
+from refindery.application.services.admin_eval import AdminEvalService
 from refindery.application.services.backfill import BackfillService
 from refindery.application.services.canonicalization import CanonicalizationService
 from refindery.application.services.cluster_triggers import IdleDetector
@@ -57,7 +59,7 @@ class _InlineClusterEngine:
     async def fit(self, *, vectors, params: ClusterParams) -> ClusterFitResult:
         from refindery.adapters.cluster.worker import reduce_and_cluster
 
-        labels, probabilities, reduce_ms, cluster_ms = reduce_and_cluster(
+        labels, probabilities, projection, reduce_ms, cluster_ms = reduce_and_cluster(
             vectors,
             algorithm=params.algorithm,
             reducer="none",
@@ -74,6 +76,7 @@ class _InlineClusterEngine:
             probabilities=probabilities,
             reduce_ms=reduce_ms,
             cluster_ms=cluster_ms,
+            projection=projection,
         )
 
 
@@ -151,6 +154,9 @@ def build_test_container(
     ingest = IngestService(store=store, queue=queue, clock=clock, router=router)
     sink = DuckDbSink(settings.duckdb.path)
     query_log = DuckDbQueryLog(sink)
+    metrics_snapshotter = MetricsSnapshotter(
+        sink, interval_s=settings.observability.metrics_snapshot_interval_s
+    )
     reranker = FakeReranker()
     similarity = SimilarityService(store=store)
     search = SearchService(
@@ -206,6 +212,14 @@ def build_test_container(
         clock=clock,
         reranker=reranker,
     )
+    admin_eval = AdminEvalService(
+        path=settings.duckdb.path,
+        store=store,
+        queue=queue,
+        compare=compare,
+        clock=clock,
+    )
+    queue.add_handler(JobKind.EVAL_REPLAY, admin_eval.handle_job)
     return Container(
         settings=settings,
         clock=clock,
@@ -230,5 +244,7 @@ def build_test_container(
         idle_detector=idle_detector,
         backfill=backfill,
         compare=compare,
+        metrics_snapshotter=metrics_snapshotter,
+        admin_eval=admin_eval,
         reranker=reranker,
     )

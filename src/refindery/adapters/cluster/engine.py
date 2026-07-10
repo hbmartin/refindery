@@ -25,7 +25,13 @@ class ProcessPoolClusterEngine:
     ) -> ClusterFitResult:
         """Fit in the pool; only arrays and primitives cross the boundary."""
         loop = asyncio.get_running_loop()
-        labels, probabilities, reduce_ms, cluster_ms = await loop.run_in_executor(
+        (
+            labels,
+            probabilities,
+            projection,
+            reduce_ms,
+            cluster_ms,
+        ) = await loop.run_in_executor(
             self._executor,
             partial(
                 reduce_and_cluster,
@@ -46,6 +52,7 @@ class ProcessPoolClusterEngine:
             probabilities=probabilities,
             reduce_ms=reduce_ms,
             cluster_ms=cluster_ms,
+            projection=projection,
         )
 
     def close(self) -> None:

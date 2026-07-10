@@ -30,6 +30,7 @@ class ClusterFitResult:
     probabilities: npt.NDArray[np.float32]
     reduce_ms: float
     cluster_ms: float
+    projection: npt.NDArray[np.float32]
 
 
 class ClusterEngine(Protocol):

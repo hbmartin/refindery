@@ -253,6 +253,7 @@ class ObservabilitySettings(BaseModel):
     traces: TraceExporter = TraceExporter.OFF
     otlp_endpoint: str | None = None
     json_logs: bool = True
+    metrics_snapshot_interval_s: float = Field(default=15.0, gt=0)
 
 
 class Settings(BaseSettings):

@@ -15,6 +15,8 @@ from refindery.api.schemas import (
     IngestAcceptedResponse,
     IngestPageRequest,
     IngestRevisitResponse,
+    PageChunkResponse,
+    PageChunksResponse,
     PageResponse,
     PageStatusFeatures,
     PageStatusResponse,
@@ -144,12 +146,40 @@ async def get_page(
         title=page.title,
         body_text=page.body_text,
         source=page.source,
-        metadata=page.metadata,  # type: ignore[arg-type]
+        metadata=page.metadata,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         first_seen_at=page.first_seen_at,
         last_seen_at=page.last_seen_at,
         visit_count=page.visit_count,
         indexed_at=page.indexed_at,
         status=page.status,
+    )
+
+
+@router.get(
+    "/{page_id}/chunks",
+    operation_id="get_page_chunks",
+    summary="List a page's indexed chunks",
+)
+async def get_page_chunks(
+    page_id: str,
+    container: Annotated[Container, Depends(get_container)],
+) -> PageChunksResponse:
+    """Return chunk text and body offsets in ordinal order."""
+    await _require_page(container, page_id)
+    chunks = await container.store.chunks_for_page(PageId(page_id))
+    return PageChunksResponse(
+        page_id=page_id,
+        chunks=[
+            PageChunkResponse(
+                chunk_id=chunk.id,
+                ordinal=chunk.ordinal,
+                text=chunk.text,
+                token_count=chunk.token_count,
+                char_start=chunk.char_start,
+                char_end=chunk.char_end,
+            )
+            for chunk in chunks
+        ],
     )
 
 

@@ -131,12 +131,19 @@ def reduce_and_cluster(
     min_samples: int,
     random_state: int,
     leiden_resolution: float = 1.0,
-) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float32], float, float]:
+) -> tuple[
+    npt.NDArray[np.int64],
+    npt.NDArray[np.float32],
+    npt.NDArray[np.float32],
+    float,
+    float,
+]:
     """Reduce then cluster; returns (labels, probabilities, reduce_ms, cluster_ms)."""
     if len(vectors) == 0:
         return (
             np.array([], dtype=np.int64),
             np.array([], dtype=np.float32),
+            np.empty((0, 2), dtype=np.float32),
             0.0,
             0.0,
         )
@@ -205,4 +212,30 @@ def reduce_and_cluster(
             msg = f"unknown clustering algorithm {algorithm!r}"
             raise ValueError(msg)
     cluster_ms = (time.perf_counter() - started) * 1_000.0
-    return labels, probabilities, reduce_ms, cluster_ms
+
+    projection = _project_2d(vectors, random_state=random_state)
+    return (
+        labels,
+        probabilities,
+        np.asarray(projection, dtype=np.float32),
+        reduce_ms,
+        cluster_ms,
+    )
+
+
+def _project_2d(
+    vectors: npt.NDArray[np.float32], *, random_state: int
+) -> npt.NDArray[np.float32]:
+    """Produce deterministic display coordinates without changing clustering."""
+    if len(vectors) == 1:
+        return np.zeros((1, 2), dtype=np.float32)
+    if vectors.shape[1] <= 2:
+        projection = np.zeros((len(vectors), 2), dtype=np.float32)
+        projection[:, : vectors.shape[1]] = vectors
+        return projection
+    from sklearn.decomposition import PCA  # noqa: PLC0415 — worker only
+
+    return np.asarray(
+        PCA(n_components=2, random_state=random_state).fit_transform(vectors),
+        dtype=np.float32,
+    )

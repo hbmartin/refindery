@@ -10,6 +10,7 @@ from refindery.adapters.observability.otel import configure_tracing
 from refindery.api.auth import TokenRegistry, require_read
 from refindery.api.mcp import mount_mcp
 from refindery.api.routes import (
+    admin,
     clusters,
     compare,
     entities,
@@ -60,6 +61,8 @@ def create_app(settings: Settings, *, container: Container | None = None) -> Fas
     app.include_router(entities.router, dependencies=authed)
     app.include_router(models.router, dependencies=authed)
     app.include_router(compare.router, dependencies=authed)
+    app.include_router(admin.router, dependencies=authed)
+    app.include_router(admin.identity_router)
     app.include_router(health.router)
     mount_mcp(app, settings)
     return app

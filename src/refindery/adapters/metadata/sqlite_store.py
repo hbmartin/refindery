@@ -39,8 +39,11 @@ from refindery.domain.models import (
     BlacklistRule,
     Chunk,
     Cluster,
+    ClusterProjectionCentroid,
+    ClusterProjectionPoint,
     ClusterRun,
     EmbeddingModel,
+    EvalReplayResult,
     Job,
     JobKind,
     JobStatus,
@@ -712,6 +715,83 @@ class _EntityClusterMixin:
         )
         await self.conn.commit()
 
+    async def list_cluster_runs(self, *, limit: int = 100) -> list[ClusterRun]:
+        """List cluster runs newest first."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM cluster_runs ORDER BY started_at DESC LIMIT ?", (limit,)
+        )
+        rows = await cursor.fetchall()
+        return [
+            ClusterRun(
+                id=row["id"],
+                trigger=row["trigger_kind"],
+                algorithm=row["algorithm"],
+                params=json.loads(row["params"]),
+                started_at=datetime.fromisoformat(row["started_at"]),
+                finished_at=_dt(row["finished_at"]),
+                duration_ms=row["duration_ms"],
+                n_pages=row["n_pages"],
+                n_clusters=row["n_clusters"],
+                n_noise=row["n_noise"],
+            )
+            for row in rows
+        ]
+
+    async def insert_cluster_projection(
+        self,
+        *,
+        points: list[ClusterProjectionPoint],
+        centroids: list[ClusterProjectionCentroid],
+    ) -> None:
+        """Persist projection rows atomically."""
+        await self.conn.executemany(
+            "INSERT INTO cluster_projection_points "
+            "(run_id, page_id, x, y, cluster_id) VALUES (?, ?, ?, ?, ?)",
+            [(p.run_id, p.page_id, p.x, p.y, p.cluster_id) for p in points],
+        )
+        await self.conn.executemany(
+            "INSERT INTO cluster_projection_centroids "
+            "(run_id, cluster_id, x, y) VALUES (?, ?, ?, ?)",
+            [(c.run_id, c.cluster_id, c.x, c.y) for c in centroids],
+        )
+        await self.conn.commit()
+
+    async def get_cluster_projection(
+        self, *, run_id: str
+    ) -> tuple[list[ClusterProjectionPoint], list[ClusterProjectionCentroid]]:
+        """Read projection rows in stable identifier order."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM cluster_projection_points WHERE run_id = ? ORDER BY page_id",
+            (run_id,),
+        )
+        points = [
+            ClusterProjectionPoint(
+                run_id=row["run_id"],
+                page_id=PageId(row["page_id"]),
+                x=row["x"],
+                y=row["y"],
+                cluster_id=(
+                    None if row["cluster_id"] is None else ClusterId(row["cluster_id"])
+                ),
+            )
+            for row in await cursor.fetchall()
+        ]
+        cursor = await self.conn.execute(
+            "SELECT * FROM cluster_projection_centroids WHERE run_id = ? "
+            "ORDER BY cluster_id",
+            (run_id,),
+        )
+        centroids = [
+            ClusterProjectionCentroid(
+                run_id=row["run_id"],
+                cluster_id=ClusterId(row["cluster_id"]),
+                x=row["x"],
+                y=row["y"],
+            )
+            for row in await cursor.fetchall()
+        ]
+        return points, centroids
+
     async def insert_lineage(
         self, *, run_id: str, records: list[LineageRecord]
     ) -> None:
@@ -857,6 +937,39 @@ class _EntityClusterMixin:
             updated_at=datetime.fromisoformat(row["updated_at"]),
             finished_at=_dt(row["finished_at"]),
             last_error=row["last_error"],
+        )
+
+    async def put_eval_replay_result(self, result: EvalReplayResult) -> None:
+        """Persist a replay report or terminal error."""
+        await self.conn.execute(
+            "INSERT INTO eval_replay_results "
+            "(job_id, report, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(job_id) DO UPDATE SET report = excluded.report, "
+            "error = excluded.error, updated_at = excluded.updated_at",
+            (
+                result.job_id,
+                None if result.report is None else json.dumps(result.report),
+                result.error,
+                _ts(result.created_at),
+                _ts(result.updated_at),
+            ),
+        )
+        await self.conn.commit()
+
+    async def get_eval_replay_result(self, job_id: JobId) -> EvalReplayResult | None:
+        """Fetch a durable replay result."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM eval_replay_results WHERE job_id = ?", (job_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return EvalReplayResult(
+            job_id=JobId(row["job_id"]),
+            report=None if row["report"] is None else json.loads(row["report"]),
+            error=row["error"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
     async def delete_model(self, model_id: str) -> None:
@@ -1086,7 +1199,9 @@ class SqliteMetadataStore(_EntityClusterMixin):
             return []
         unique_ids = list(dict.fromkeys(chunk_ids))
         by_id: dict[str, Chunk] = {}
-        for id_batch in batched(unique_ids, _SQLITE_VARIABLE_BATCH_SIZE, strict=False):
+        for id_batch in batched(
+            unique_ids, n=_SQLITE_VARIABLE_BATCH_SIZE, strict=False
+        ):
             placeholders = ",".join("?" for _ in id_batch)
             query = (  # safe: placeholders contain only generated question marks
                 f"SELECT id, page_id, ordinal, text, token_count, char_start, "  # noqa: S608
@@ -1247,21 +1362,27 @@ class SqliteMetadataStore(_EntityClusterMixin):
         return None if row is None else _job_from_row(row)
 
     async def list_jobs(
-        self, *, status: JobStatus | None = None, limit: int = 100
+        self,
+        *,
+        status: JobStatus | None = None,
+        kind: JobKind | None = None,
+        limit: int = 100,
     ) -> list[Job]:
         """List jobs, newest first."""
-        if status is None:
-            cursor = await self.conn.execute(
-                f"SELECT {_JOB_COLUMNS} FROM jobs "  # noqa: S608
-                "ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            )
-        else:
-            cursor = await self.conn.execute(
-                f"SELECT {_JOB_COLUMNS} FROM jobs WHERE status = ? "  # noqa: S608
-                "ORDER BY created_at DESC LIMIT ?",
-                (status, limit),
-            )
+        clauses: list[str] = []
+        values: list[object] = []
+        if status is not None:
+            clauses.append("status = ?")
+            values.append(status)
+        if kind is not None:
+            clauses.append("kind = ?")
+            values.append(kind)
+        where = "" if not clauses else f" WHERE {' AND '.join(clauses)}"
+        cursor = await self.conn.execute(
+            f"SELECT {_JOB_COLUMNS} FROM jobs{where} "  # noqa: S608
+            "ORDER BY created_at DESC LIMIT ?",
+            (*values, limit),
+        )
         rows = await cursor.fetchall()
         return [_job_from_row(row) for row in rows]
 

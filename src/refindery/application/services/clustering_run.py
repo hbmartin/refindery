@@ -33,7 +33,14 @@ from refindery.domain.clustering import (
 from refindery.domain.ctfidf import compute_ctfidf
 from refindery.domain.errors import NoActiveModelError, RefinderyError
 from refindery.domain.ids import ClusterId, PageId, new_cluster_run_id
-from refindery.domain.models import Cluster, ClusterRun, Job, JobKind
+from refindery.domain.models import (
+    Cluster,
+    ClusterProjectionCentroid,
+    ClusterProjectionPoint,
+    ClusterRun,
+    Job,
+    JobKind,
+)
 from refindery.domain.rollup import l2_normalize
 
 logger = logging.getLogger(__name__)
@@ -145,6 +152,13 @@ class ClusterRunService:
             outcome=outcome,
             run=run,
         )
+        await self._persist_projection(
+            cluster_input=cluster_input,
+            labels=result.labels.tolist(),
+            projection=result.projection,
+            outcome=outcome,
+            run=run,
+        )
         await self._finalize_run(
             run=run,
             started=started,
@@ -153,6 +167,45 @@ class ClusterRunService:
             result=result,
         )
         return run
+
+    async def _persist_projection(
+        self,
+        *,
+        cluster_input: _ClusterInput,
+        labels: list[int],
+        projection: npt.NDArray[np.float32],
+        outcome: MatchOutcome,
+        run: ClusterRun,
+    ) -> None:
+        points = [
+            ClusterProjectionPoint(
+                run_id=run.id,
+                page_id=page_id,
+                x=float(coordinates[0]),
+                y=float(coordinates[1]),
+                cluster_id=(None if label < 0 else outcome.ids_by_label[label]),
+            )
+            for page_id, label, coordinates in zip(
+                cluster_input.page_ids, labels, projection, strict=True
+            )
+        ]
+        centroids: list[ClusterProjectionCentroid] = []
+        for label, cluster_id in outcome.ids_by_label.items():
+            member_coordinates = [
+                coordinates
+                for coordinates, point_label in zip(projection, labels, strict=True)
+                if point_label == label
+            ]
+            centroid = np.mean(member_coordinates, axis=0)
+            centroids.append(
+                ClusterProjectionCentroid(
+                    run_id=run.id,
+                    cluster_id=cluster_id,
+                    x=float(centroid[0]),
+                    y=float(centroid[1]),
+                )
+            )
+        await self._store.insert_cluster_projection(points=points, centroids=centroids)
 
     async def _cluster_input(self) -> _ClusterInput | None:
         n_pages = await self._store.count_indexed_pages()

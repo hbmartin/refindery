@@ -381,11 +381,12 @@ removing the blacklist rule later (below) does *not* restore purged content.
 Most upstreams don't need these — page status covers the common case — but they
 help when a page reaches `dead` and you want to inspect or re-drive the work.
 
-- **`GET /v1/jobs?status_filter=<status>&limit=<n>`** → `JobListResponse` — the
+- **`GET /v1/jobs?status=<status>&kind=<kind>&limit=<n>`** → `JobListResponse` — the
   job ledger, newest first, optionally filtered by job status (`pending`,
   `running`, `done`, `failed`, `dead`). Each row carries `kind`, `status`,
   `attempts`/`max_attempts`, `last_error`, and timestamps. Use it to find
-  dead-lettered indexing jobs.
+  dead-lettered indexing jobs. The old `status_filter` name remains accepted as
+  a deprecated alias; do not send both status parameters.
 
 - **`POST /v1/jobs/{job_id}/retry`** → `JobResponse` — reset a **dead** job to
   pending and re-enqueue it. Returns `409 Conflict` if the job is not `dead`

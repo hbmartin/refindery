@@ -1,6 +1,6 @@
 """Read-oriented administration endpoints for the web UI."""
 
-# ruff: noqa: D101, D103
+# ruff: noqa: D101
 
 import asyncio
 from dataclasses import asdict
@@ -138,6 +138,7 @@ class McpAdminResponse(BaseModel):
 async def whoami(
     principal: Annotated[Principal, Depends(require_read)],
 ) -> WhoAmIResponse:
+    """Return the authenticated token name and its effective scopes."""
     return WhoAmIResponse(
         name=principal.name, scopes=sorted(scope.value for scope in principal.scopes)
     )
@@ -163,6 +164,7 @@ async def metrics_timeseries(
     since: datetime | None = None,
     step: Annotated[float, Query(gt=0)] = 60.0,
 ) -> MetricsTimeseriesResponse:
+    """Read historical rollups plus current gauge values for one metric."""
     reader = DuckDbMetricsReader(container.settings.duckdb.path)
     exists = await asyncio.to_thread(reader.metric_exists, metric)
     if not exists:
@@ -195,6 +197,12 @@ async def query_log(
     limit: Annotated[int, Query(ge=1, le=1_000)] = 100,
     kind: Annotated[Literal["search", "compare_arm"] | None, Query()] = None,
 ) -> QueryLogListResponse:
+    """List retrieval traces newest first, optionally filtered by time and kind.
+
+    Each trace includes candidate, dense, sparse, and final hit sets, per-stage
+    timing, and the latest relevance feedback. The default limit is 100 and the
+    maximum is 1,000.
+    """
     rows = await asyncio.to_thread(
         _query_reader(container).read_detailed_runs,
         since=since,
@@ -213,6 +221,7 @@ async def query_log_detail(
     query_id: str,
     container: Annotated[Container, Depends(get_container)],
 ) -> QueryLogRunResponse:
+    """Return one full retrieval trace with rankings, timing, and feedback."""
     rows = await asyncio.to_thread(
         _query_reader(container).read_detailed_runs, query_id=query_id, limit=1
     )
@@ -228,6 +237,7 @@ async def eval_score(
     body: EvalScoreRequest,
     container: Annotated[Container, Depends(get_container)],
 ) -> ScoreReport:
+    """Score logged rankings synchronously without calling external providers."""
     service = EvalService(reader=_query_reader(container))
     return await asyncio.to_thread(
         service.score_log, k=body.k, since=body.since, model=body.model
@@ -245,6 +255,11 @@ async def eval_replay(
     body: EvalReplayRequest,
     container: Annotated[Container, Depends(get_container)],
 ) -> EvalReplayAcceptedResponse:
+    """Enqueue a durable two-arm replay that may call paid model providers.
+
+    The response is a 202 with a job ID and result URL. Polling the result needs
+    only read scope; the report or failure survives process restarts.
+    """
     job_id = await container.admin_eval.enqueue(payload=body.model_dump())
     return EvalReplayAcceptedResponse(
         job_id=job_id, result_url=f"/v1/admin/eval/replay/{job_id}"
@@ -260,6 +275,7 @@ async def eval_replay_result(
     job_id: str,
     container: Annotated[Container, Depends(get_container)],
 ) -> EvalReplayResultResponse:
+    """Read durable replay status, its completed report, or terminal failure."""
     job = await container.store.get_job(JobId(job_id))
     if job is None or job.kind is not JobKind.EVAL_REPLAY:
         raise HTTPException(status_code=404, detail="eval replay job not found")
@@ -310,6 +326,11 @@ def _field_paths(model: BaseModel, *, prefix: str = "") -> list[str]:
 async def admin_config(
     container: Annotated[Container, Depends(get_container)],
 ) -> AdminConfigResponse:
+    """Return effective settings with secrets redacted recursively.
+
+    Every setting is marked ``boot_only`` because runtime mutation is not
+    supported.
+    """
     return AdminConfigResponse(
         settings=cast("dict[str, Any]", _redact(container.settings)),
         mutability=dict.fromkeys(_field_paths(container.settings), "boot_only"),
@@ -318,6 +339,7 @@ async def admin_config(
 
 @router.get("/mcp", operation_id="admin_mcp", summary="Inspect mounted MCP tools")
 async def admin_mcp(request: Request) -> McpAdminResponse:
+    """Return actual mounted tool metadata and mutating-tool visibility."""
     return McpAdminResponse(
         tools=request.app.state.mcp_tools,
         enable_mutating_tools=request.app.state.enable_mutating_tools,

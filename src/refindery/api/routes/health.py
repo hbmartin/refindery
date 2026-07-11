@@ -12,20 +12,47 @@ from refindery.application.container import Container
 router = APIRouter(tags=["health"])
 
 
-@router.get("/metrics", include_in_schema=False, dependencies=[Depends(require_read)])
+@router.get(
+    "/metrics",
+    operation_id="metrics",
+    dependencies=[Depends(require_read)],
+    summary="Read Prometheus metrics",
+    description="Return the Prometheus text exposition for authenticated scrapers.",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+            "description": "Prometheus text exposition.",
+        }
+    },
+)
 async def metrics() -> Response:
     """Prometheus metrics (bearer auth; scrapers support bearer_token)."""
     payload, content_type = render_metrics()
     return Response(content=payload, media_type=content_type)
 
 
-@router.get("/healthz", include_in_schema=False)
+@router.get(
+    "/healthz",
+    operation_id="healthz",
+    summary="Check process liveness",
+    description="Return success when the API process is running. No authentication.",
+)
 async def healthz() -> dict[str, str]:
     """Process is up."""
     return {"status": "ok"}
 
 
-@router.get("/readyz", include_in_schema=False)
+@router.get(
+    "/readyz",
+    operation_id="readyz",
+    summary="Check service readiness",
+    description=(
+        "Check that the metadata store is reachable and an embedding model is "
+        "active. Returns 503 until both conditions hold. No authentication."
+    ),
+    responses={503: {"description": "A required dependency is unavailable."}},
+)
 async def readyz(
     response: Response,
     container: Annotated[Container, Depends(get_container)],

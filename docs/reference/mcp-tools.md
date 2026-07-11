@@ -7,25 +7,13 @@ identically to the HTTP API.
 
 ## Read-only tools (default)
 
-| Tool | Backing route | Purpose |
-| --- | --- | --- |
-| `search` | `POST /v1/search` | Hybrid retrieval; ranked pages with matched passages. |
-| `get_page` | `GET /v1/pages/{id}` | Full body text and metadata for a page. |
-| `page_status` | `GET /v1/pages/{id}/status` | Lifecycle status and feature warnings. |
-| `similar_to` | `GET /v1/pages/{id}/similar` | Related pages via vector/cluster/entity mediation. |
-| `list_clusters` | `GET /v1/clusters` | Current (non-tombstoned) clusters. |
-| `cluster_pages` | `GET /v1/clusters/{id}` | Member pages of a cluster. |
-| `entities` | `GET /v1/entities/{id_or_form}` | Resolve an entity by ID or canonical form. |
-| `compare` | `POST /v1/compare` | A/B two embedding models over one query. |
+{{ mcp_tools_reference("read") }}
 
 ## Mutating tools (opt-in)
 
 Listed only when `REFINDERY_MCP__ENABLE_MUTATING_TOOLS=true`:
 
-| Tool | Backing route | Purpose |
-| --- | --- | --- |
-| `add_page` | `POST /v1/pages` | Ingest a page. |
-| `forget` | `POST /v1/forget` | Purge and blacklist. |
+{{ mcp_tools_reference("mutating") }}
 
 !!! warning "Visibility ≠ authorization"
     The flag controls only which tools appear in `tools/list`. Authorization is

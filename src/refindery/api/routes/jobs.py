@@ -36,7 +36,11 @@ async def list_jobs(
     kind: Annotated[JobKind | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1_000)] = 100,
 ) -> JobListResponse:
-    """List jobs, newest first, optionally filtered by status."""
+    """List jobs newest first, optionally filtered by status and kind.
+
+    ``status_filter`` is a deprecated compatibility alias for ``status``; a
+    request that supplies both is rejected.
+    """
     if status_value is not None and status_filter is not None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -58,7 +62,7 @@ async def retry_job(
     job_id: str,
     container: Annotated[Container, Depends(get_container)],
 ) -> JobResponse:
-    """Reset a dead job to pending and re-enqueue it."""
+    """Reset a dead job to pending and re-enqueue it; other states return 409."""
     job = await container.store.get_job(JobId(job_id))
     if job is None:
         raise HTTPException(

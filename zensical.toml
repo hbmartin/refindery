@@ -157,6 +157,10 @@ alternate_style = true
 # optional heavy extras such as torch/gliner are never imported at build time).
 [project.plugins.search]
 
+[project.plugins.macros]
+module_name = "docs_api_reference"
+on_error_fail = true
+
 [project.plugins.mkdocstrings.handlers.python]
 paths = ["src"]
 inventories = ["https://docs.python.org/3/objects.inv"]

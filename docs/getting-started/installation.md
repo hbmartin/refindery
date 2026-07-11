@@ -106,6 +106,10 @@ docker compose up -d --build
 curl -s http://127.0.0.1:8000/healthz
 ```
 
+This also starts Prometheus on `http://127.0.0.1:9090`, scraping the app's
+metrics, and turns on console tracing. See
+[Observability → Prometheus in Docker](../configuration/observability.md#prometheus-in-docker).
+
 ## Optional extras
 
 | Extra | Enables | Pulls in |

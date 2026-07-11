@@ -1,7 +1,8 @@
 """Prometheus metrics: the single home for every metric object.
 
 Plain prometheus-client (most metrics are non-HTTP, an instrumentator would
-cover little). Mounted via ``make_asgi_app()`` at /metrics.
+cover little). Exposed by the authenticated ``GET /metrics`` route (see
+``api/routes/health.py``), which renders this registry via ``render_metrics()``.
 """
 
 from prometheus_client import (

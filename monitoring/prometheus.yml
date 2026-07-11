@@ -1,0 +1,16 @@
+# Scrape config for the Docker Compose stack. The refindery `/metrics`
+# endpoint requires a read-scoped bearer token, so the scrape authenticates
+# with the token in `credentials_file` — the prometheus service writes it
+# there from REFINDERY_AUTH_TOKEN at container start (see docker-compose.yml).
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: refindery
+    scheme: http
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/token
+    static_configs:
+      - targets: ["app:8000"]

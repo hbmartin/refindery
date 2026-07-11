@@ -21,6 +21,10 @@ services:
       REFINDERY_RERANKER__PROVIDER: "${REFINDERY_RERANKER__PROVIDER:-voyage}"
       REFINDERY_RERANKER__MODEL: "${REFINDERY_RERANKER__MODEL:-rerank-2.5}"
       REFINDERY_ENTITY__EXTRACTOR_CHAIN: '${REFINDERY_ENTITY__EXTRACTOR_CHAIN:-["spacy"]}'
+      # Observability on by default in the stack: metrics are always exported
+      # (Prometheus scrapes them below); tracing emits console spans to the
+      # container logs. Set otlp + OTLP_ENDPOINT if you add a collector.
+      REFINDERY_OBSERVABILITY__TRACES: "${REFINDERY_OBSERVABILITY__TRACES:-console}"
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       COHERE_API_KEY: ${COHERE_API_KEY:-}
     volumes:
@@ -37,6 +41,29 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
 
+  # Scrapes the app's authenticated /metrics. Prometheus can't expand env vars
+  # in its config, so the entrypoint writes REFINDERY_AUTH_TOKEN to the
+  # credentials_file the scrape config reads, then execs prometheus.
+  prometheus:
+    image: prom/prometheus:v3.6.0
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        printf '%s' "$${REFINDERY_AUTH_TOKEN}" > /etc/prometheus/token &&
+        exec /bin/prometheus
+        --config.file=/etc/prometheus/prometheus.yml
+        --storage.tsdb.path=/prometheus
+    environment:
+      REFINDERY_AUTH_TOKEN: "${REFINDERY_AUTH_TOKEN:?set REFINDERY_AUTH_TOKEN before starting prometheus}"
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - app
+
   # Ollama for local embeddings / LLM labeling (v2; uncomment to enable).
   # ollama:
   #   image: ollama/ollama:latest
@@ -49,4 +76,5 @@ volumes:
   refindery_data:
   refindery_models:
   qdrant_storage:
+  prometheus_data:
   # ollama_models:

@@ -4,6 +4,11 @@ Uses fastembed's ``Qdrant/bm25`` model: term-frequency sparse vectors whose
 IDF half is applied server-side (the sparse vector space is configured with
 ``modifier=IDF``). Isolated here so a different encoder can replace it
 without touching the adapter.
+
+This tokenization is unrelated to LanceDB's FTS analyzer, so the two
+backends' sparse arms return different hits for the same query (see
+``adapters/vector/hybrid.py``). Quoted phrases are a bag of words here —
+positional phrase adjacency is a LanceDB-only capability.
 """
 
 from dataclasses import dataclass

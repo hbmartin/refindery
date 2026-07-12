@@ -1,7 +1,15 @@
 """Client-side hybrid execution shared by every vector-store adapter.
 
-Both arms run concurrently with per-arm timing, then fuse with RRF so
-rankings are identical across stores (the conformance suite asserts this).
+Both arms run concurrently with per-arm timing, then fuse with RRF.
+
+Only the fusion step is cross-store identical: each backend's sparse arm has
+its own analyzer (Qdrant: fastembed ``Qdrant/bm25`` term frequencies with
+server-side IDF; LanceDB: Lance-native FTS with stemming, stop words
+retained, and positional phrase support), so per-arm hits and scores
+legitimately differ for the same query — switching backends can change what
+surfaces. The conformance suite therefore asserts rank-level behavior plus
+the per-store fusion identity ``fused == rrf_fuse(dense, sparse, k)``, never
+cross-store equality.
 """
 
 import asyncio

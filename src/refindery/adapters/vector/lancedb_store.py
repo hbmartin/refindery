@@ -5,10 +5,12 @@ a native Lance FTS index (the shared sparse arm — tantivy was removed in
 lancedb 0.34); one safe ``vectors_<slug>_<hash>`` table per model holds that
 model's dense vectors plus a payload copy for filter pushdown.
 
-The chunks table is ``optimize()``d after every write: lancedb 0.34's FTS
-scan over *unindexed* rows silently returns no results when a matching
-document contains a repeated term, so search must never rely on it —
-optimize folds fresh rows into the index immediately.
+The chunks table is ``optimize()``d after every upsert: lancedb 0.34's FTS
+flat scan over *unindexed* rows silently misses some matching documents
+(observed with a repeated-term doc; the exact trigger is fragment-dependent
+— characterized in ``tests/integration/test_lancedb_fts.py``), so search
+must never rely on it. Deletes need no optimize: deleted rows are masked at
+query time.
 Table-per-model keeps add/drop-model trivial (create/drop table) at the cost
 of duplicated payload — irrelevant at personal scale.
 
@@ -169,6 +171,9 @@ class LanceDbVectorStore:
             chunks = self._db.open_table(_CHUNKS_TABLE)
             rows = [{**_payload_row(p), "text": p.text} for p in points]
             self._merge(chunks, rows)
+            # Fold fresh rows into the FTS index before returning: the
+            # unindexed flat scan silently misses some matching docs (see
+            # tests/integration/test_lancedb_fts.py).
             chunks.optimize()
             model_ids = {m for p in points for m in p.vectors}
             for model_id in sorted(model_ids):
@@ -214,7 +219,7 @@ class LanceDbVectorStore:
             raise last_error
 
     async def delete_pages(self, page_ids: Sequence[PageId]) -> None:
-        """Delete chunks of these pages from every table; rebuild FTS."""
+        """Delete chunks of these pages from every table."""
         if not page_ids:
             return
 
@@ -223,7 +228,9 @@ class LanceDbVectorStore:
             predicate = f"page_id IN ({quoted})"
             chunks = self._db.open_table(_CHUNKS_TABLE)
             chunks.delete(predicate)
-            chunks.optimize()
+            # No optimize: deleted rows are masked at query time (see
+            # tests/integration/test_lancedb_fts.py); compaction rides the
+            # next upsert's optimize().
             for name in self._table_names():
                 if name.startswith("vectors_"):
                     self._db.open_table(name).delete(predicate)
@@ -278,7 +285,7 @@ class LanceDbVectorStore:
         limit: int,
         filters: StoreFilter | None = None,
     ) -> list[ChunkHit]:
-        """Tantivy FTS over the shared chunks table."""
+        """Lance-native FTS (BM25) over the shared chunks table."""
 
         def _query() -> list[ChunkHit]:
             table = self._db.open_table(_CHUNKS_TABLE)

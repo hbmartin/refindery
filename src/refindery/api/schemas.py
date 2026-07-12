@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Annotated, Any, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import (
     AwareDatetime,
@@ -9,11 +10,18 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    field_validator,
     model_validator,
 )
 
 from refindery.application.services.similarity_service import Mediation
-from refindery.domain.models import BlacklistKind, JobStatus, PageStatus
+from refindery.domain.models import (
+    BlacklistKind,
+    JobStatus,
+    PageStatus,
+    WatchKind,
+    WatchStatus,
+)
 from refindery.domain.retrieval import RollupStrategy
 
 
@@ -637,3 +645,71 @@ class CompareResponse(BaseModel):
     query: str
     runs: list[CompareModelRun]
     agreement: list[CompareAgreement]
+
+
+class CreateWatchRequest(BaseModel):
+    """POST /v1/watches body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    kind: WatchKind = WatchKind.RSS
+    title: str | None = None
+    interval_hours: int | None = Field(default=None, ge=1)
+    enabled: bool = True
+    config: dict[str, str] | None = None
+
+    @field_validator("url")
+    @classmethod
+    def _absolute_http(cls, value: str) -> str:
+        parts = urlsplit(value)
+        if parts.scheme not in {"http", "https"} or not parts.hostname:
+            msg = f"not an absolute http(s) URL: {value!r}"
+            raise ValueError(msg)
+        return value
+
+
+class UpdateWatchRequest(BaseModel):
+    """PATCH /v1/watches/{watch_id} body; omitted fields stay unchanged.
+
+    ``url`` is immutable: it is the watch's dedup identity — delete and
+    recreate to point a watch elsewhere.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    interval_hours: int | None = Field(default=None, ge=1)
+    title: str | None = None
+    config: dict[str, str] | None = None
+
+
+class WatchResponse(BaseModel):
+    """One watch with its schedule and last-poll health."""
+
+    id: str
+    kind: WatchKind
+    url: str
+    title: str | None
+    enabled: bool
+    interval_hours: int
+    config: dict[str, str] | None
+    next_run_at: datetime
+    last_run_at: datetime | None
+    last_status: WatchStatus
+    last_error: str | None
+    last_item_count: int | None
+    created_at: datetime
+
+
+class WatchListResponse(BaseModel):
+    """GET /v1/watches response."""
+
+    watches: list[WatchResponse]
+
+
+class WatchRunAcceptedResponse(BaseModel):
+    """POST /v1/watches/{watch_id}/run response (202)."""
+
+    watch_id: str
+    job_id: str | None

@@ -16,6 +16,7 @@ ClusterId = NewType("ClusterId", str)
 ClusterRunId = NewType("ClusterRunId", str)
 BlacklistId = NewType("BlacklistId", str)
 QueryId = NewType("QueryId", str)
+WatchId = NewType("WatchId", str)
 
 
 def new_page_id() -> PageId:
@@ -56,3 +57,8 @@ def new_blacklist_id() -> BlacklistId:
 def new_query_id() -> QueryId:
     """Generate a fresh time-ordered query id."""
     return QueryId(str(uuid6.uuid7()))
+
+
+def new_watch_id() -> WatchId:
+    """Generate a fresh time-ordered watch id."""
+    return WatchId(str(uuid6.uuid7()))

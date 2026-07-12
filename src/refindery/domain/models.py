@@ -9,7 +9,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from refindery.domain.ids import BlacklistId, ChunkId, ClusterId, JobId, PageId
+from refindery.domain.ids import (
+    BlacklistId,
+    ChunkId,
+    ClusterId,
+    JobId,
+    PageId,
+    WatchId,
+)
 
 
 class PageStatus(StrEnum):
@@ -53,6 +60,7 @@ class JobKind(StrEnum):
     CANONICALIZE_ENTITIES = "canonicalize_entities"
     PURGE_VECTORS = "purge_vectors"
     EVAL_REPLAY = "eval_replay"
+    POLL_WATCH = "poll_watch"
 
 
 class BlacklistKind(StrEnum):
@@ -60,6 +68,20 @@ class BlacklistKind(StrEnum):
 
     URL = "url"
     DOMAIN = "domain"
+
+
+class WatchKind(StrEnum):
+    """Kinds of pull sources a watch can poll."""
+
+    RSS = "rss"
+
+
+class WatchStatus(StrEnum):
+    """Outcome of a watch's most recent poll."""
+
+    PENDING = "pending"
+    OK = "ok"
+    ERROR = "error"
 
 
 @dataclass(slots=True)
@@ -139,6 +161,31 @@ class BlacklistRule:
     kind: BlacklistKind
     created_at: datetime
     reason: str | None = None
+
+
+@dataclass(slots=True)
+class Watch:
+    """A pull source polled on its own schedule; discovered URLs are ingested.
+
+    ``next_run_at`` is advanced by the scheduling tick at enqueue time, never
+    by the poll handler, so a permanently failing poll cannot freeze the
+    schedule. ``config`` holds per-kind options (e.g. ``max_entries``).
+    """
+
+    id: WatchId
+    kind: WatchKind
+    url: str
+    title: str | None
+    enabled: bool
+    interval_hours: int
+    config: dict[str, str] | None
+    next_run_at: datetime
+    last_run_at: datetime | None
+    last_status: WatchStatus
+    last_error: str | None
+    last_item_count: int | None
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(slots=True)

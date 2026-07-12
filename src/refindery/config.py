@@ -163,6 +163,20 @@ class FetchSettings(BaseModel):
     max_bytes: int = Field(default=10_000_000, ge=1)
 
 
+class WatchSettings(BaseModel):
+    """Watch-mode polling configuration.
+
+    ``default_interval_hours`` applies when a watch is created without an
+    explicit interval. ``poll_tick_enabled`` gates the minute-level scheduler
+    periodic (tests drive ``WatchService.tick`` directly instead).
+    """
+
+    default_interval_hours: int = Field(default=24, ge=1)
+    poll_tick_enabled: bool = True
+    max_due_per_tick: int = Field(default=20, ge=1)
+    max_items_per_poll: int = Field(default=200, ge=1)
+
+
 class JobsSettings(BaseModel):
     """Durable job execution parameters.
 
@@ -284,6 +298,7 @@ class Settings(BaseSettings):
     canonicalize: CanonicalizeSettings = CanonicalizeSettings()
     indexing: IndexingSettings = IndexingSettings()
     fetch: FetchSettings = FetchSettings()
+    watch: WatchSettings = WatchSettings()
     jobs: JobsSettings = JobsSettings()
     resilience: ResilienceSettings = ResilienceSettings()
     mcp: McpSettings = McpSettings()

@@ -1,9 +1,11 @@
 """Test container: real SQLite/LanceDB/huey/chunker, fake embedder/fetcher."""
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from refindery.adapters.chunking.chonkie_chunker import ChonkieChunker
 from refindery.adapters.clock import SystemClock
+from refindery.adapters.feeds.rss_feedparser import RssWatchSource
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
 from refindery.adapters.observability.metrics_history import MetricsSnapshotter
@@ -11,10 +13,13 @@ from refindery.adapters.observability.query_log import DuckDbQueryLog
 from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.vector.lancedb_store import LanceDbVectorStore
 from refindery.application.container import Container
+from refindery.application.ports.clock import Clock
 from refindery.application.ports.cluster_engine import (
     ClusterFitResult,
     ClusterParams,
 )
+from refindery.application.ports.content_extractor import Fetcher
+from refindery.application.ports.watch_source import WatchSource
 from refindery.application.services.admin_eval import AdminEvalService
 from refindery.application.services.backfill import BackfillService
 from refindery.application.services.canonicalization import CanonicalizationService
@@ -30,6 +35,7 @@ from refindery.application.services.ingest import IngestService
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.application.services.search_service import SearchService
 from refindery.application.services.similarity_service import SimilarityService
+from refindery.application.services.watch_service import WatchService
 from refindery.config import (
     DuckDbSettings,
     EmbedderSettings,
@@ -42,7 +48,7 @@ from refindery.config import (
     TokenSpec,
     VectorStoreKind,
 )
-from refindery.domain.models import EmbeddingModel, JobKind
+from refindery.domain.models import EmbeddingModel, JobKind, WatchKind
 from tests.fakes.embedder import FakeEmbedder
 from tests.fakes.entity_extractor import FakeEntityExtractor
 from tests.fakes.extraction import FakeFetcher, FakeHtmlExtractor
@@ -111,13 +117,15 @@ def fake_embedder_factory(model: EmbeddingModel) -> FakeEmbedder:
 def build_test_container(
     tmp_path: Path,
     *,
-    fetcher: FakeFetcher | None = None,
+    fetcher: Fetcher | None = None,
     extractor=None,
     cluster_engine=None,
+    clock: Clock | None = None,
+    watch_sources: Mapping[WatchKind, WatchSource] | None = None,
 ) -> Container:
     """Wire a container over real local adapters + fakes for external I/O."""
     settings = make_test_settings(tmp_path)
-    clock = SystemClock()
+    clock = clock or SystemClock()
     store = SqliteMetadataStore(settings.sqlite.path)
     vector_store = LanceDbVectorStore(path=settings.lancedb.path)
     chunker = ChonkieChunker(target_tokens=64, overlap_tokens=8, hard_max_tokens=96)
@@ -220,6 +228,19 @@ def build_test_container(
         clock=clock,
     )
     queue.add_handler(JobKind.EVAL_REPLAY, admin_eval.handle_job)
+    watches = WatchService(
+        store=store,
+        queue=queue,
+        clock=clock,
+        ingest=ingest,
+        sources=(
+            {WatchKind.RSS: RssWatchSource(fetcher=the_fetcher)}
+            if watch_sources is None
+            else watch_sources
+        ),
+        settings=settings.watch,
+    )
+    queue.add_handler(JobKind.POLL_WATCH, watches.handle_poll_watch)
     return Container(
         settings=settings,
         clock=clock,
@@ -246,5 +267,6 @@ def build_test_container(
         compare=compare,
         metrics_snapshotter=metrics_snapshotter,
         admin_eval=admin_eval,
+        watches=watches,
         reranker=reranker,
     )

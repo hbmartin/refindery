@@ -17,6 +17,7 @@ from refindery.adapters.extraction.http_fetcher import HttpFetcher
 from refindery.adapters.extraction.pdf_pypdf import PypdfExtractor
 from refindery.adapters.extractors.chain import ChainExtractor
 from refindery.adapters.extractors.gazetteer import GazetteerExtractor
+from refindery.adapters.feeds.rss_feedparser import RssWatchSource
 from refindery.adapters.llm.openai_compat import OpenAiCompatClient
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
@@ -52,10 +53,11 @@ from refindery.application.services.ingest import IngestService
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.application.services.search_service import SearchService
 from refindery.application.services.similarity_service import SimilarityService
+from refindery.application.services.watch_service import WatchService
 from refindery.config import RerankerKind, Settings, VectorStoreKind
 from refindery.domain.canonical_url import CanonicalizationRules
 from refindery.domain.errors import ConfigurationError, ExtractionUnavailableError
-from refindery.domain.models import EmbeddingModel, JobKind, ModelStatus
+from refindery.domain.models import EmbeddingModel, JobKind, ModelStatus, WatchKind
 
 if TYPE_CHECKING:
     from refindery.adapters.embedding.surface_forms import Model2VecSurfaceEmbedder
@@ -92,6 +94,7 @@ class Container:
     compare: CompareService
     metrics_snapshotter: MetricsSnapshotter
     admin_eval: AdminEvalService
+    watches: WatchService
     reranker: Reranker | None = None
 
     async def startup(self) -> None:
@@ -330,6 +333,59 @@ def _register_lease_watchdog(
     )
 
 
+def _register_periodics(
+    *,
+    settings: Settings,
+    queue: HueyJobQueue,
+    store: MetadataStore,
+    clock: Clock,
+    forget: ForgetService,
+    idle_detector: IdleDetector,
+    clustering: ClusterRunService,
+    watches: WatchService,
+) -> None:
+    from huey import crontab  # noqa: PLC0415 — scheduling detail
+
+    queue.register_periodic(
+        name="verify_tombstones",
+        schedule=crontab(minute="*/10"),
+        handler=forget.verify_tombstones,
+    )
+    _register_lease_watchdog(queue=queue, store=store, clock=clock)
+
+    async def _idle_tick() -> None:
+        if await idle_detector.should_run():
+            await clustering.request_run(trigger="idle")
+
+    queue.register_periodic(
+        name="cluster_idle_tick", schedule=crontab(minute="*"), handler=_idle_tick
+    )
+    if settings.cluster.cron is not None:
+        fields = settings.cluster.cron.split()
+        cron_schedule = crontab(
+            minute=fields[0],
+            hour=fields[1] if len(fields) > 1 else "*",
+            day=fields[2] if len(fields) > 2 else "*",
+            month=fields[3] if len(fields) > 3 else "*",
+            day_of_week=fields[4] if len(fields) > 4 else "*",
+        )
+
+        async def _cron_tick() -> None:
+            await clustering.request_run(trigger="cron")
+
+        queue.register_periodic(
+            name="cluster_cron", schedule=cron_schedule, handler=_cron_tick
+        )
+    if settings.watch.poll_tick_enabled:
+
+        async def _watch_tick() -> None:
+            await watches.tick()
+
+        queue.register_periodic(
+            name="watch_poll_tick", schedule=crontab(minute="*"), handler=_watch_tick
+        )
+
+
 def _build_surface_embedder(settings: Settings) -> "Model2VecSurfaceEmbedder | None":
     if settings.entity.surface_embedder == "none":
         return None
@@ -541,38 +597,26 @@ def build_container(settings: Settings) -> Container:
     )
     queue.add_handler(JobKind.EVAL_REPLAY, admin_eval.handle_job)
 
-    from huey import crontab  # noqa: PLC0415 — scheduling detail
-
-    queue.register_periodic(
-        name="verify_tombstones",
-        schedule=crontab(minute="*/10"),
-        handler=forget.verify_tombstones,
+    watches = WatchService(
+        store=store,
+        queue=queue,
+        clock=clock,
+        ingest=ingest,
+        sources={WatchKind.RSS: RssWatchSource(fetcher=fetcher)},
+        settings=settings.watch,
     )
-    _register_lease_watchdog(queue=queue, store=store, clock=clock)
+    queue.add_handler(JobKind.POLL_WATCH, watches.handle_poll_watch)
 
-    async def _idle_tick() -> None:
-        if await idle_detector.should_run():
-            await clustering.request_run(trigger="idle")
-
-    queue.register_periodic(
-        name="cluster_idle_tick", schedule=crontab(minute="*"), handler=_idle_tick
+    _register_periodics(
+        settings=settings,
+        queue=queue,
+        store=store,
+        clock=clock,
+        forget=forget,
+        idle_detector=idle_detector,
+        clustering=clustering,
+        watches=watches,
     )
-    if settings.cluster.cron is not None:
-        fields = settings.cluster.cron.split()
-        cron_schedule = crontab(
-            minute=fields[0],
-            hour=fields[1] if len(fields) > 1 else "*",
-            day=fields[2] if len(fields) > 2 else "*",
-            month=fields[3] if len(fields) > 3 else "*",
-            day_of_week=fields[4] if len(fields) > 4 else "*",
-        )
-
-        async def _cron_tick() -> None:
-            await clustering.request_run(trigger="cron")
-
-        queue.register_periodic(
-            name="cluster_cron", schedule=cron_schedule, handler=_cron_tick
-        )
     return Container(
         settings=settings,
         clock=clock,
@@ -599,5 +643,6 @@ def build_container(settings: Settings) -> Container:
         compare=compare,
         metrics_snapshotter=metrics_snapshotter,
         admin_eval=admin_eval,
+        watches=watches,
         reranker=reranker,
     )

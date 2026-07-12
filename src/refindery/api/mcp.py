@@ -31,10 +31,16 @@ READ_OPERATIONS = [
     "cluster_pages",
     "entities",
     "compare",
+    "list_watches",
+    "get_watch",
 ]
 MUTATING_OPERATIONS = [
     "add_page",
     "forget",
+    "create_watch",
+    "update_watch",
+    "delete_watch",
+    "run_watch",
 ]
 
 

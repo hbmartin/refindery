@@ -9,6 +9,14 @@ updates rather than per-model point upserts.
 
 Fusion is client-side via the shared ``rrf_fuse`` (Qdrant's server-side RRF
 exposes no ``k`` parameter, and the query log needs both arms anyway).
+
+``url=":memory:"`` runs qdrant-client's in-process local mode — daemon-free,
+useful as a conformance smoke layer (``make test-qdrant-local``) and for
+throwaway installs. Local mode supports everything this adapter calls (IDF
+modifier, the >=1.18 vector-name add/drop APIs, filtered query_points);
+payload-index creation warns and no-ops there, which
+``_ensure_payload_indexes`` already tolerates. The real server (the CI
+service container) remains the conformance source of truth.
 """
 
 import asyncio
@@ -34,6 +42,7 @@ from refindery.domain.retrieval import ChunkHit
 from refindery.domain.rollup import Vector
 
 _SPARSE_NAME = "sparse_bm25"
+_LOCAL_URL = ":memory:"
 logger = logging.getLogger(__name__)
 
 
@@ -89,7 +98,12 @@ class QdrantVectorStore:
         collection: str = "refindery_chunks",
         api_key: str | None = None,
     ) -> None:
-        self._client = AsyncQdrantClient(url=url, api_key=api_key)
+        if url == _LOCAL_URL:
+            # qdrant-client rejects ":memory:" as a url= and requires the
+            # location= form for in-process local mode (api_key is moot).
+            self._client = AsyncQdrantClient(location=url)
+        else:
+            self._client = AsyncQdrantClient(url=url, api_key=api_key)
         self._collection = collection
         self._encoder: Bm25SparseEncoder | None = None
         self._encoder_lock = asyncio.Lock()

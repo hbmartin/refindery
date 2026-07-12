@@ -99,7 +99,11 @@ def _schema_type(schema: JsonObject) -> str:  # noqa: PLR0911
         name = ref.rsplit("/", maxsplit=1)[-1]
         return f"[`{name}`](#{_anchor(name)})"
 
-    for keyword, separator in (("oneOf", " | "), ("anyOf", " | "), ("allOf", " & ")):
+    for keyword, separator in (
+        ("oneOf", " &#124; "),
+        ("anyOf", " &#124; "),
+        ("allOf", " & "),
+    ):
         if raw_variants := schema.get(keyword):
             variants = _list(raw_variants, context=keyword)
             return separator.join(
@@ -109,13 +113,13 @@ def _schema_type(schema: JsonObject) -> str:  # noqa: PLR0911
 
     if enum := schema.get("enum"):
         values = _list(enum, context="enum")
-        return " | ".join(f"`{_json_literal(value)}`" for value in values)
+        return " &#124; ".join(f"`{_json_literal(value)}`" for value in values)
     if "const" in schema:
         return f"`{_json_literal(schema['const'])}`"
 
     raw_type = schema.get("type")
     if isinstance(raw_type, list):
-        return " | ".join(str(item) for item in raw_type)
+        return " &#124; ".join(str(item) for item in raw_type)
     schema_type = _text(raw_type, default="object")
     if schema_type == "array":
         item_schema = _object(schema.get("items", {}), context="array items")
@@ -148,6 +152,11 @@ def _schema_notes(schema: JsonObject) -> str:
         notes.append(f"Default: `{_json_literal(schema['default'])}`")
     if "example" in schema:
         notes.append(f"Example: `{_json_literal(schema['example'])}`")
+    if "examples" in schema:
+        examples = _list(schema["examples"], context="schema examples")
+        if examples:
+            rendered = ", ".join(f"`{_json_literal(item)}`" for item in examples)
+            notes.append(f"Examples: {rendered}")
     if schema.get("deprecated") is True:
         notes.append("Deprecated")
     labels = {

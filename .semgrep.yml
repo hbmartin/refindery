@@ -1,0 +1,11 @@
+rules:
+  - id: no-raw-markdown-union-separator
+    languages: [python]
+    message: >-
+      Use an escaped pipe entity in generated schema types so Markdown tables keep
+      their column structure.
+    severity: ERROR
+    paths:
+      include:
+        - docs_api_reference.py
+    pattern-regex: '" \| "'

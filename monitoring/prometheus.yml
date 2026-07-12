@@ -11,6 +11,6 @@ scrape_configs:
     metrics_path: /metrics
     authorization:
       type: Bearer
-      credentials_file: /etc/prometheus/token
+      credentials_file: /tmp/refindery-prometheus-token
     static_configs:
       - targets: ["app:8000"]

@@ -157,10 +157,23 @@ class IndexingSettings(BaseModel):
 
 
 class FetchSettings(BaseModel):
-    """Outbound fetch limits for the fetch_and_index path."""
+    """Outbound fetch limits for the fetch_and_index path.
+
+    The ``youtube_*`` knobs control transcript ingestion for YouTube video
+    URLs (requires the ``youtube`` extra): preferred caption languages,
+    whether auto-generated captions are acceptable, and whether captionless
+    videos fall back to local Whisper transcription (``transcribe`` /
+    ``transcribe-mlx`` extra + ffmpeg).
+    """
 
     timeout_s: float = Field(default=10.0, gt=0)
     max_bytes: int = Field(default=10_000_000, ge=1)
+    youtube_captions: bool = True
+    youtube_caption_langs: tuple[str, ...] = ("en", "en-US", "en-GB")
+    youtube_allow_auto_captions: bool = True
+    youtube_transcribe_fallback: bool = True
+    youtube_whisper_model: str = "small"
+    youtube_timeout_s: float = Field(default=60.0, gt=0)
 
 
 class WatchSettings(BaseModel):
@@ -175,6 +188,7 @@ class WatchSettings(BaseModel):
     poll_tick_enabled: bool = True
     max_due_per_tick: int = Field(default=20, ge=1)
     max_items_per_poll: int = Field(default=200, ge=1)
+    youtube_max_entries: int = Field(default=100, ge=1)
 
 
 class JobsSettings(BaseModel):

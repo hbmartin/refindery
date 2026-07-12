@@ -50,14 +50,30 @@ POST /v1/pages ──▶ canonicalize URL ──▶ blacklist check ──▶ up
    failure is visible under `features.entities` but does **not** change the
    page's retrieval status.
 
+## YouTube transcripts
+
+With the `youtube` extra installed (`uv add 'refindery[youtube]'`), a URL-only
+ingest of a YouTube *video* URL fetches the video's transcript via yt-dlp
+instead of the JS-heavy watch page: manual captions are preferred, then
+auto-generated captions, then — when the `transcribe` (or `transcribe-mlx` on
+Apple Silicon) extra is installed — the audio is downloaded and transcribed
+locally with Whisper. The page's title becomes the video title and its body
+the transcript. A video with no captions and no transcriber installed fails
+fetch (the page eventually goes `dead`); HTML is never indexed for videos.
+The audio path needs `ffmpeg` on the host. Configure with
+`REFINDERY_FETCH__YOUTUBE_*` (languages, auto-caption opt-out, Whisper model);
+to watch whole playlists/channels see [Watches](watches.md).
+
 ## URL canonicalization
 
 Two requests for the "same" page must collapse to one row. Canonicalization
 lowercases the scheme and host, strips the default port, `www.`, the fragment,
 and tracking parameters (`utm_*`, `fbclid`, `gclid`, `ref`, `si`, …), sorts the
 remaining query params, and strips the trailing slash. Per-domain overrides
-apply where the query matters (e.g. YouTube keeps only `v`). Configure overrides
-with `REFINDERY_CANONICALIZE__*`.
+apply where the query matters (e.g. YouTube keeps only `v`), and YouTube video
+URL forms (`youtu.be/<id>`, `/shorts/<id>`, `/live/<id>`) fold into
+`youtube.com/watch?v=<id>` so every form of one video dedups to one page.
+Configure overrides with `REFINDERY_CANONICALIZE__*`.
 
 ## Revisit semantics
 

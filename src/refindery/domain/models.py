@@ -74,6 +74,7 @@ class WatchKind(StrEnum):
     """Kinds of pull sources a watch can poll."""
 
     RSS = "rss"
+    YOUTUBE = "youtube"
 
 
 class WatchStatus(StrEnum):

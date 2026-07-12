@@ -16,6 +16,14 @@ and dead-lettering.
 | Kind | Source | Discovered items |
 | ---- | ------ | ---------------- |
 | `rss` | An RSS/Atom feed URL | The feed's entry links |
+| `youtube` | A YouTube playlist or channel URL | The listing's video URLs (each ingested as a [transcript](ingest.md#youtube-transcripts)) |
+
+`youtube` watches require the `youtube` extra (`uv add 'refindery[youtube]'`);
+creating one without it returns `501`. A single video URL is rejected with
+`422` — submit those to `POST /v1/pages` directly. Channel URLs
+(`/@handle`, `/channel/…`) poll the uploads tab; per-watch `config` may set
+`max_entries` to bound how many videos each poll considers (default
+`watch.youtube_max_entries`, 100).
 
 ## Creating a watch
 

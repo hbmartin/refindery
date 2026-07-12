@@ -7,7 +7,7 @@ explains *how the feature works* and links to the precise API contract in the
 <div class="grid cards" markdown>
 
 - :material-tray-arrow-down: [**Ingesting pages**](ingest.md) — capture → index → enrich, the page lifecycle, and revisit semantics.
-- :material-rss: [**Watches**](watches.md) — poll RSS/Atom feeds on a schedule and auto-ingest new articles.
+- :material-rss: [**Watches**](watches.md) — poll RSS/Atom feeds and YouTube playlists/channels on a schedule and auto-ingest new items.
 - :material-magnify: [**Searching**](search.md) — the hybrid retrieval pipeline, filters, recency decay, and A/B compare.
 - :material-robot: [**MCP for agents**](mcp.md) — connect an LLM agent, read vs mutating tools, and grounding.
 - :material-chart-line: [**Evaluation**](eval.md) — score and replay retrieval quality from the query log.

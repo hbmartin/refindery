@@ -15,6 +15,7 @@ from refindery.adapters.cluster.engine import ProcessPoolClusterEngine
 from refindery.adapters.embedding.catsu_embedder import CatsuEmbedder
 from refindery.adapters.extraction.http_fetcher import HttpFetcher
 from refindery.adapters.extraction.pdf_pypdf import PypdfExtractor
+from refindery.adapters.extraction.routing_fetcher import RoutingFetcher
 from refindery.adapters.extractors.chain import ChainExtractor
 from refindery.adapters.extractors.gazetteer import GazetteerExtractor
 from refindery.adapters.feeds.rss_feedparser import RssWatchSource
@@ -28,6 +29,11 @@ from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.resilience.circuit_breaker import BreakerConfig, BreakerRegistry
 from refindery.adapters.resilience.retry import RetryPolicy
 from refindery.adapters.resilience.wrappers import ResilientEmbedder, ResilientReranker
+from refindery.adapters.youtube.backend import YoutubeBackend, YtDlpBackend
+from refindery.adapters.youtube.caption_fetcher import YoutubeCaptionFetcher
+from refindery.adapters.youtube.extractor import YoutubeTranscriptExtractor
+from refindery.adapters.youtube.transcriber import build_transcriber
+from refindery.adapters.youtube.watch_source import YoutubeWatchSource
 from refindery.application.ports.chunker import Chunker
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.content_extractor import ContentExtractor, Fetcher
@@ -61,6 +67,7 @@ from refindery.domain.models import EmbeddingModel, JobKind, ModelStatus, WatchK
 
 if TYPE_CHECKING:
     from refindery.adapters.embedding.surface_forms import Model2VecSurfaceEmbedder
+    from refindery.application.ports.watch_source import WatchSource
 
 logger = logging.getLogger(__name__)
 
@@ -433,7 +440,10 @@ def _build_reranker(settings: Settings) -> Reranker | None:
 
 
 def _build_extractors() -> list[ContentExtractor]:
-    extractors: list[ContentExtractor] = [PypdfExtractor()]
+    extractors: list[ContentExtractor] = [
+        PypdfExtractor(),
+        YoutubeTranscriptExtractor(),
+    ]
     try:
         from refindery.adapters.extraction.pulpie_html import (  # noqa: PLC0415 — lazy: requires the html extra
             PulpieHtmlExtractor,
@@ -443,6 +453,34 @@ def _build_extractors() -> list[ContentExtractor]:
     except ExtractionUnavailableError:
         pass  # html extra not installed; body_html ingest fails with install hint
     return extractors
+
+
+def _build_youtube(settings: Settings) -> tuple[Fetcher | None, YoutubeBackend | None]:
+    """Build the caption fetcher + shared yt-dlp backend, or (None, None)."""
+    if not settings.fetch.youtube_captions:
+        return None, None
+    try:
+        backend = YtDlpBackend()
+    except ExtractionUnavailableError:
+        logger.info(
+            "yt-dlp not installed; YouTube URLs fetch as plain pages "
+            "(install the 'youtube' extra for transcripts)"
+        )
+        return None, None
+    transcriber = (
+        build_transcriber(model=settings.fetch.youtube_whisper_model)
+        if settings.fetch.youtube_transcribe_fallback
+        else None
+    )
+    fetcher = YoutubeCaptionFetcher(
+        backend=backend,
+        transcriber=transcriber,
+        langs=settings.fetch.youtube_caption_langs,
+        allow_auto=settings.fetch.youtube_allow_auto_captions,
+        transcribe_fallback=settings.fetch.youtube_transcribe_fallback,
+        timeout_s=settings.fetch.youtube_timeout_s,
+    )
+    return fetcher, backend
 
 
 def build_container(settings: Settings) -> Container:
@@ -462,8 +500,14 @@ def build_container(settings: Settings) -> Container:
         overlap_tokens=settings.chunking.overlap_tokens,
         hard_max_tokens=settings.chunking.hard_max_tokens,
     )
-    fetcher = HttpFetcher(
+    http_fetcher = HttpFetcher(
         timeout_s=settings.fetch.timeout_s, max_bytes=settings.fetch.max_bytes
+    )
+    youtube_fetcher, youtube_backend = _build_youtube(settings)
+    fetcher: Fetcher = (
+        http_fetcher
+        if youtube_fetcher is None
+        else RoutingFetcher(default=http_fetcher, youtube=youtube_fetcher)
     )
     router = ExtractionRouter(_build_extractors())
     registry = ModelRegistry(
@@ -597,12 +641,21 @@ def build_container(settings: Settings) -> Container:
     )
     queue.add_handler(JobKind.EVAL_REPLAY, admin_eval.handle_job)
 
+    sources: dict[WatchKind, WatchSource] = {
+        WatchKind.RSS: RssWatchSource(fetcher=fetcher)
+    }
+    if youtube_backend is not None:
+        sources[WatchKind.YOUTUBE] = YoutubeWatchSource(
+            backend=youtube_backend,
+            max_entries=settings.watch.youtube_max_entries,
+            timeout_s=settings.fetch.youtube_timeout_s,
+        )
     watches = WatchService(
         store=store,
         queue=queue,
         clock=clock,
         ingest=ingest,
-        sources={WatchKind.RSS: RssWatchSource(fetcher=fetcher)},
+        sources=sources,
         settings=settings.watch,
     )
     queue.add_handler(JobKind.POLL_WATCH, watches.handle_poll_watch)

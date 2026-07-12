@@ -17,7 +17,8 @@ from refindery.application.container import Container
 from refindery.application.services.watch_service import WatchPatch
 from refindery.domain.errors import WatchNotFoundError
 from refindery.domain.ids import WatchId
-from refindery.domain.models import Watch
+from refindery.domain.models import Watch, WatchKind
+from refindery.domain.youtube import YoutubeUrlKind, classify_youtube_url
 
 router = APIRouter(prefix="/v1/watches", tags=["watches"])
 
@@ -46,6 +47,22 @@ def _not_found(watch_id: str) -> HTTPException:
     )
 
 
+def _validate_watch_url(kind: WatchKind, url: str) -> None:
+    """Kind-specific URL checks beyond the schema's http(s) validation."""
+    if kind is not WatchKind.YOUTUBE:
+        return
+    match classify_youtube_url(url):
+        case YoutubeUrlKind.PLAYLIST | YoutubeUrlKind.CHANNEL:
+            return
+        case YoutubeUrlKind.VIDEO:
+            detail = "URL is a single video; POST it to /v1/pages instead"
+        case _:
+            detail = "not a recognizable YouTube playlist or channel URL"
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail
+    )
+
+
 @router.post(
     "",
     operation_id="create_watch",
@@ -55,7 +72,9 @@ def _not_found(watch_id: str) -> HTTPException:
     description=(
         "Register a URL to poll on a schedule (default every 24 hours). Each "
         "poll discovers the source's current item URLs and ingests the new "
-        "ones, so they become searchable. Kind 'rss' polls an RSS/Atom feed. "
+        "ones, so they become searchable. Kind 'rss' polls an RSS/Atom feed; "
+        "kind 'youtube' polls a YouTube playlist or channel and ingests each "
+        "video's transcript (single videos go to add_page instead). "
         "Already-indexed and blacklisted items are skipped automatically. "
         "The first poll runs within a minute of creation."
     ),
@@ -73,6 +92,7 @@ async def create_watch(
                 "deployment (its optional extra is not installed)"
             ),
         )
+    _validate_watch_url(request.kind, request.url)
     watch = await container.watches.create(
         kind=request.kind,
         url=request.url,

@@ -10,7 +10,7 @@ from typing import Protocol
 
 from refindery.domain.clustering import LineageRecord
 from refindery.domain.entities import Entity, EntityType
-from refindery.domain.ids import ChunkId, ClusterId, EntityId, JobId, PageId
+from refindery.domain.ids import ChunkId, ClusterId, EntityId, JobId, PageId, WatchId
 from refindery.domain.models import (
     BlacklistRule,
     Chunk,
@@ -30,6 +30,8 @@ from refindery.domain.models import (
     PageStatus,
     TombstoneStatus,
     VectorTombstone,
+    Watch,
+    WatchStatus,
 )
 
 
@@ -239,6 +241,58 @@ class MetadataStore(Protocol):
 
     async def list_expired_running_jobs(self, *, now: datetime) -> list[Job]:
         """Return running jobs whose lease expired (read-only; watchdog telemetry)."""
+        ...
+
+    async def count_jobs_by_status(self) -> dict[JobStatus, int]:
+        """Job counts grouped by ledger status (absent statuses omitted)."""
+        ...
+
+    async def count_tombstones_by_status(self) -> dict[TombstoneStatus, int]:
+        """Vector tombstone counts grouped by status (absent statuses omitted)."""
+        ...
+
+    # -- watches ---------------------------------------------------------------
+
+    async def create_watch(self, watch: Watch) -> bool:
+        """Insert a watch row; False when (kind, url) already exists."""
+        ...
+
+    async def get_watch(self, watch_id: WatchId) -> Watch | None:
+        """Fetch one watch."""
+        ...
+
+    async def list_watches(self) -> list[Watch]:
+        """All watches, newest first."""
+        ...
+
+    async def update_watch(self, watch: Watch) -> bool:
+        """Full-row update by id; False when the watch does not exist."""
+        ...
+
+    async def delete_watch(self, watch_id: WatchId) -> bool:
+        """Delete a watch; False when it does not exist."""
+        ...
+
+    async def list_due_watches(self, *, now: datetime, limit: int) -> list[Watch]:
+        """Return enabled watches with next_run_at <= now, most overdue first."""
+        ...
+
+    async def mark_watch_run(
+        self, *, watch_id: WatchId, last_run_at: datetime, next_run_at: datetime
+    ) -> None:
+        """Advance the schedule at enqueue time (decoupled from poll outcome)."""
+        ...
+
+    async def record_watch_result(
+        self,
+        *,
+        watch_id: WatchId,
+        status: WatchStatus,
+        last_error: str | None,
+        item_count: int | None,
+        now: datetime,
+    ) -> None:
+        """Record the outcome of a poll."""
         ...
 
     # -- blacklist & forget -----------------------------------------------------

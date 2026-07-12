@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
+from refindery.domain.youtube import rewrite_to_watch
+
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 DEFAULT_TRACKING_PARAMS = ("utm_*", "fbclid", "gclid", "ref", "si")
@@ -85,14 +87,17 @@ def canonicalize(url: str, rules: CanonicalizationRules | None = None) -> Canoni
 
     scheme = parts.scheme.lower()
     host = _strip_www(parts.hostname.lower())
+    # Fold youtu.be/shorts/live video forms into the watch page so every URL
+    # form of one video dedups to the same canonical page.
+    host, path, query = rewrite_to_watch(host=host, path=parts.path, query=parts.query)
     port = parts.port
     if port is None or _DEFAULT_PORTS.get(scheme) == port:
         netloc = host
     else:
         netloc = f"{host}:{port}"
 
-    path = parts.path.rstrip("/")
-    query = _canonical_query(parts.query, host=host, rules=rules)
+    path = path.rstrip("/")
+    query = _canonical_query(query, host=host, rules=rules)
 
     canonical = f"{scheme}://{netloc}{path}"
     if query:

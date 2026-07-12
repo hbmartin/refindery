@@ -16,12 +16,14 @@ from refindery.api.routes import (
     clusters,
     compare,
     entities,
+    events,
     forget,
     health,
     jobs,
     models,
     pages,
     search,
+    watches,
 )
 from refindery.application.container import Container, build_container
 from refindery.config import Settings
@@ -41,6 +43,8 @@ _AUTHENTICATED_ROUTERS = (
     entities.router,
     models.router,
     compare.router,
+    watches.router,
+    events.router,
     admin.router,
 )
 

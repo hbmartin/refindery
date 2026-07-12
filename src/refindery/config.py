@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from refindery.domain.canonical_url import DEFAULT_TRACKING_PARAMS
+from refindery.domain.models import MAX_WATCH_INTERVAL_HOURS
 from refindery.domain.rollup import PoolingStrategy
 
 
@@ -157,10 +158,38 @@ class IndexingSettings(BaseModel):
 
 
 class FetchSettings(BaseModel):
-    """Outbound fetch limits for the fetch_and_index path."""
+    """Outbound fetch limits for the fetch_and_index path.
+
+    The ``youtube_*`` knobs control transcript ingestion for YouTube video
+    URLs (requires the ``youtube`` extra): preferred caption languages,
+    whether auto-generated captions are acceptable, and whether captionless
+    videos fall back to local Whisper transcription (``transcribe`` /
+    ``transcribe-mlx`` extra + ffmpeg).
+    """
 
     timeout_s: float = Field(default=10.0, gt=0)
     max_bytes: int = Field(default=10_000_000, ge=1)
+    youtube_captions: bool = True
+    youtube_caption_langs: tuple[str, ...] = ("en", "en-US", "en-GB")
+    youtube_allow_auto_captions: bool = True
+    youtube_transcribe_fallback: bool = True
+    youtube_whisper_model: str = "small"
+    youtube_timeout_s: float = Field(default=60.0, gt=0)
+
+
+class WatchSettings(BaseModel):
+    """Watch-mode polling configuration.
+
+    ``default_interval_hours`` applies when a watch is created without an
+    explicit interval. ``poll_tick_enabled`` gates the minute-level scheduler
+    periodic (tests drive ``WatchService.tick`` directly instead).
+    """
+
+    default_interval_hours: int = Field(default=24, ge=1, le=MAX_WATCH_INTERVAL_HOURS)
+    poll_tick_enabled: bool = True
+    max_due_per_tick: int = Field(default=20, ge=1)
+    max_items_per_poll: int = Field(default=200, ge=1)
+    youtube_max_entries: int = Field(default=100, ge=1)
 
 
 class JobsSettings(BaseModel):
@@ -193,6 +222,14 @@ class McpSettings(BaseModel):
     """MCP server surface configuration."""
 
     enable_mutating_tools: bool = False
+
+
+class EventsSettings(BaseModel):
+    """Server-sent events (GET /v1/events) configuration."""
+
+    heartbeat_s: float = Field(default=15.0, gt=0)
+    queue_size: int = Field(default=256, ge=1)
+    max_subscribers: int = Field(default=16, ge=1)
 
 
 class EntitySettings(BaseModel):
@@ -284,9 +321,11 @@ class Settings(BaseSettings):
     canonicalize: CanonicalizeSettings = CanonicalizeSettings()
     indexing: IndexingSettings = IndexingSettings()
     fetch: FetchSettings = FetchSettings()
+    watch: WatchSettings = WatchSettings()
     jobs: JobsSettings = JobsSettings()
     resilience: ResilienceSettings = ResilienceSettings()
     mcp: McpSettings = McpSettings()
+    events: EventsSettings = EventsSettings()
     entity: EntitySettings = EntitySettings()
     search: SearchSettings = SearchSettings()
     cluster: ClusterSettings = ClusterSettings()

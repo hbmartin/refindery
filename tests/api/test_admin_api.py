@@ -136,3 +136,74 @@ async def test_cluster_projection_distinguishes_empty_run_from_missing(admin_har
         "/v1/clusters/projection", params={"run_id": "missing"}, headers=READ
     )
     assert missing.status_code == 404
+
+
+async def test_metrics_summary_fresh_instance(admin_harness):
+    """Store-derived fields are exact zeros; registry fields asserted loosely."""
+    client, _, _ = admin_harness
+    response = await client.get("/v1/admin/metrics/summary", headers=READ)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tombstones"] == {"pending": 0, "deleted": 0, "verified": 0}
+    assert set(body["jobs"]["by_status"]) == {
+        "pending",
+        "running",
+        "done",
+        "failed",
+        "dead",
+    }
+    assert body["jobs"]["queue_depth"] == body["jobs"]["by_status"]["pending"]
+    assert body["search_latency"] is None
+    # Registry-derived fields are process-global: assert shape, never zeros.
+    assert body["query_log_dropped_rows"] >= 0
+    assert body["rerank_degraded_total"] >= 0
+    assert isinstance(body["embedding_errors_by_provider"], dict)
+    assert isinstance(body["breakers"], list)
+    assert body["generated_at"]
+
+
+async def test_metrics_summary_populated(admin_harness):
+    """Tombstones, done jobs, and latency quantiles appear after activity."""
+    client, _container, _app = admin_harness
+    page = {
+        "url": "https://arch.example/hexagonal",
+        "title": "Hexagonal Architecture",
+        "body_extracted": "Hexagonal architecture keeps the domain pure.",
+    }
+    created = await client.post("/v1/pages", json=page, headers=FULL)
+    page_id = created.json()["page_id"]
+    async with asyncio.timeout(30):
+        while True:
+            got = await client.get(f"/v1/pages/{page_id}/status", headers=FULL)
+            if got.json()["status"] == "indexed":
+                break
+            await asyncio.sleep(0.05)
+    for query in ("hexagonal", "domain"):
+        search = await client.post("/v1/search", json={"query": query}, headers=FULL)
+        assert search.status_code == 200
+    forget = await client.post("/v1/forget", json={"url": page["url"]}, headers=FULL)
+    assert forget.status_code == 200
+
+    async with asyncio.timeout(30):
+        while True:
+            response = await client.get("/v1/admin/metrics/summary", headers=READ)
+            body = response.json()
+            latency = body["search_latency"]
+            if latency is not None and latency["runs"] >= 2:
+                break
+            await asyncio.sleep(0.2)
+    assert latency["p50_ms"] <= latency["p95_ms"]
+    tombstones = body["tombstones"]
+    assert sum(tombstones.values()) >= 1
+    assert body["jobs"]["by_status"]["done"] >= 1
+
+
+async def test_metrics_summary_future_since_nulls_latency(admin_harness):
+    client, _, _ = admin_harness
+    response = await client.get(
+        "/v1/admin/metrics/summary",
+        params={"since": "2999-01-01T00:00:00Z"},
+        headers=READ,
+    )
+    assert response.status_code == 200
+    assert response.json()["search_latency"] is None

@@ -59,6 +59,33 @@ class JobNotFoundError(RefinderyError):
         super().__init__(f"job {job_id!r} not found")
 
 
+class WatchNotFoundError(RefinderyError):
+    """No watch with the given id exists."""
+
+    def __init__(self, watch_id: str) -> None:
+        self.watch_id = watch_id
+        super().__init__(f"watch {watch_id!r} not found")
+
+
+class WatchSourceUnavailableError(RefinderyError):
+    """The watch's kind has no wired source (its extra is not installed)."""
+
+    def __init__(self, *, kind: str) -> None:
+        self.kind = kind
+        super().__init__(f"no source available for watch kind {kind!r}")
+
+
+class WatchFanOutError(RefinderyError):
+    """None of a watch poll's discovered items could be ingested."""
+
+    def __init__(self, *, watch_id: str, item_count: int) -> None:
+        self.watch_id = watch_id
+        self.item_count = item_count
+        super().__init__(
+            f"watch {watch_id!r} failed to ingest all {item_count} discovered items"
+        )
+
+
 class ModelNotFoundError(RefinderyError):
     """No embedding model with the given id is registered."""
 

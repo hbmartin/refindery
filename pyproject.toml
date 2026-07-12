@@ -24,6 +24,7 @@ dependencies = [
     "fastapi>=0.139.0",
     "fastapi-mcp>=0.4.0",
     "fastembed>=0.8.0",
+    "feedparser>=6.0.11",
     "httpx>=0.28.1",
     "huey>=3.1.1",
     "inflect>=7.5.0",
@@ -74,6 +75,15 @@ leiden = [
 ner = [
     "en-core-web-sm",
 ]
+youtube = [
+    "yt-dlp>=2025.1.26",
+]
+transcribe = [
+    "faster-whisper>=1.1",
+]
+transcribe-mlx = [
+    "mlx-whisper>=0.4",
+]
 
 [dependency-groups]
 dev = [
@@ -108,11 +118,15 @@ en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/dow
 DEP002 = [
     # Optional extras, imported lazily (deptry cannot see conditional imports):
     "torch", "gliner", "gliner-spacy", "onnxruntime", "en-core-web-sm",
-    "igraph", "leidenalg",
+    "igraph", "leidenalg", "yt-dlp", "faster-whisper", "mlx-whisper",
     # Lazy imports inside functions/adapters:
     "scikit-learn", "umap-learn", "spacy", "model2vec",
     "opentelemetry-exporter-otlp-proto-http",
     "opentelemetry-instrumentation-fastapi",
+]
+DEP003 = [
+    # fastapi is built on starlette; importing its types directly is intentional.
+    "starlette",
 ]
 
 [tool.pytest.ini_options]

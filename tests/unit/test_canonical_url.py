@@ -40,6 +40,26 @@ CASES = [
         "https://youtube.com/watch?v=abc123",
     ),
     ("https://m.youtube.com/watch?v=abc&list=PL1", "https://m.youtube.com/watch?v=abc"),
+    # YouTube video URL forms fold into the same watch page
+    (
+        "https://youtu.be/dQw4w9WgXcQ?t=30&si=share-junk",
+        "https://youtube.com/watch?v=dQw4w9WgXcQ",
+    ),
+    (
+        "https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share",
+        "https://youtube.com/watch?v=dQw4w9WgXcQ",
+    ),
+    (
+        "https://m.youtube.com/live/dQw4w9WgXcQ",
+        "https://youtube.com/watch?v=dQw4w9WgXcQ",
+    ),
+    # ...and the watch form itself is byte-identical to what was always stored
+    (
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://youtube.com/watch?v=dQw4w9WgXcQ",
+    ),
+    # non-video youtu.be path is left alone (no 11-char id)
+    ("https://youtu.be/short", "https://youtu.be/short"),
 ]
 
 

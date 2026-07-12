@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from urllib.parse import urlsplit
 
+from refindery.adapters.observability.metrics import vector_tombstone_backlog
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
@@ -164,3 +165,9 @@ class ForgetService:
         ]
         if old_verified:
             await self._store.delete_tombstones(old_verified)
+
+        counts = await self._store.count_tombstones_by_status()
+        for tombstone_status in TombstoneStatus:
+            vector_tombstone_backlog.labels(status=tombstone_status.value).set(
+                counts.get(tombstone_status, 0)
+            )

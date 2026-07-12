@@ -10,8 +10,10 @@ import duckdb
 import httpx
 import pytest
 
+from refindery.adapters.observability.query_log_reader import DuckDbQueryLogReader
 from refindery.api.app import create_app
 from refindery.application.ports.reranker import RerankCandidate, RerankScore
+from refindery.domain.errors import NoActiveModelError
 from refindery.domain.ids import ClusterId
 from refindery.domain.models import Cluster, Mention, PageStatus
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
@@ -513,3 +515,81 @@ async def test_query_log_lands_in_duckdb(harness, tmp_path):
     assert n_sparse > 0
     assert n_final > 0
     assert joined == [(True,)]
+
+
+class _FlakyModelSearch:
+    """Delegates to the real service, failing a marker query per item."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    async def search(self, query) -> object:
+        if query.query == "fail-this-one":
+            raise NoActiveModelError
+        return await self._inner.search(query)
+
+
+async def test_search_batch_happy_path(harness):
+    client, container, _ids = harness
+    response = await client.post(
+        "/v1/search/batch",
+        json={"queries": ["zanzibar authorization", "density clustering"], "k": 5},
+        headers=AUTH,
+    )
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert [r["outcome"] for r in results] == ["ok", "ok"]
+    assert [r["index"] for r in results] == [0, 1]
+    assert results[0]["query"] == "zanzibar authorization"
+    query_ids = {r["query_id"] for r in results}
+    assert len(query_ids) == 2
+    assert all(r["timing_ms"] for r in results)
+
+    # Each item logs its own query-log row (feedback joins per query_id).
+    container.sink.close()
+    reader = DuckDbQueryLogReader(container.settings.duckdb.path)
+    logged = {run.query_id for run in reader.read_runs() if run.kind == "search"}
+    assert query_ids <= logged
+
+    feedback = await client.post(
+        "/v1/feedback",
+        json={
+            "query_id": results[0]["query_id"],
+            "page_id": results[0]["results"][0]["page_id"],
+            "relevant": True,
+        },
+        headers=AUTH,
+    )
+    assert feedback.status_code == 202
+
+
+async def test_search_batch_per_item_error_keeps_envelope_200(harness):
+    client, container, _ids = harness
+    container.search = _FlakyModelSearch(container.search)
+    response = await client.post(
+        "/v1/search/batch",
+        json={"queries": ["zanzibar authorization", "fail-this-one"]},
+        headers=AUTH,
+    )
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert results[0]["outcome"] == "ok"
+    assert results[1]["outcome"] == "error"
+    assert results[1]["error"] == "no_active_model"
+    assert results[1]["query"] == "fail-this-one"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"queries": []},
+        {"queries": ["q"] * 21},
+        {"queries": ["q"], "k": 50, "offset": 60, "candidates": 100},
+        {"queries": ["x" * 4_001]},
+        {"queries": ["q"], "unexpected": True},
+    ],
+)
+async def test_search_batch_invalid_bodies_are_422(harness, body):
+    client, _container, _ids = harness
+    response = await client.post("/v1/search/batch", json=body, headers=AUTH)
+    assert response.status_code == 422

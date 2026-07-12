@@ -15,18 +15,26 @@ from refindery.adapters.cluster.engine import ProcessPoolClusterEngine
 from refindery.adapters.embedding.catsu_embedder import CatsuEmbedder
 from refindery.adapters.extraction.http_fetcher import HttpFetcher
 from refindery.adapters.extraction.pdf_pypdf import PypdfExtractor
+from refindery.adapters.extraction.routing_fetcher import RoutingFetcher
 from refindery.adapters.extractors.chain import ChainExtractor
 from refindery.adapters.extractors.gazetteer import GazetteerExtractor
+from refindery.adapters.feeds.rss_feedparser import RssWatchSource
 from refindery.adapters.llm.openai_compat import OpenAiCompatClient
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
-from refindery.adapters.observability.metrics import jobs_lease_expired
+from refindery.adapters.observability.metrics import jobs_lease_expired, queue_depth
 from refindery.adapters.observability.metrics_history import MetricsSnapshotter
 from refindery.adapters.observability.query_log import DuckDbQueryLog
 from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.resilience.circuit_breaker import BreakerConfig, BreakerRegistry
 from refindery.adapters.resilience.retry import RetryPolicy
 from refindery.adapters.resilience.wrappers import ResilientEmbedder, ResilientReranker
+from refindery.adapters.youtube.backend import YoutubeBackend, YtDlpBackend
+from refindery.adapters.youtube.caption_fetcher import YoutubeCaptionFetcher
+from refindery.adapters.youtube.extractor import YoutubeTranscriptExtractor
+from refindery.adapters.youtube.transcriber import build_transcriber
+from refindery.adapters.youtube.watch_source import YoutubeWatchSource
+from refindery.application.job_events import JobEventBus
 from refindery.application.ports.chunker import Chunker
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.content_extractor import ContentExtractor, Fetcher
@@ -52,13 +60,21 @@ from refindery.application.services.ingest import IngestService
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.application.services.search_service import SearchService
 from refindery.application.services.similarity_service import SimilarityService
+from refindery.application.services.watch_service import WatchService
 from refindery.config import RerankerKind, Settings, VectorStoreKind
 from refindery.domain.canonical_url import CanonicalizationRules
 from refindery.domain.errors import ConfigurationError, ExtractionUnavailableError
-from refindery.domain.models import EmbeddingModel, JobKind, ModelStatus
+from refindery.domain.models import (
+    EmbeddingModel,
+    JobKind,
+    JobStatus,
+    ModelStatus,
+    WatchKind,
+)
 
 if TYPE_CHECKING:
     from refindery.adapters.embedding.surface_forms import Model2VecSurfaceEmbedder
+    from refindery.application.ports.watch_source import WatchSource
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +108,8 @@ class Container:
     compare: CompareService
     metrics_snapshotter: MetricsSnapshotter
     admin_eval: AdminEvalService
+    watches: WatchService
+    events: JobEventBus
     reranker: Reranker | None = None
 
     async def startup(self) -> None:
@@ -140,6 +158,8 @@ class Container:
     async def shutdown(self) -> None:
         """Attempt every cleanup step and log individual failures."""
         steps = (
+            # Events close first so SSE streams end before the queue stops.
+            ("events", self.events.close),
             ("queue", self.queue.stop),
             ("metrics_snapshotter", self.metrics_snapshotter.stop),
             ("entity_ingest", self.entity_ingest.close),
@@ -317,6 +337,8 @@ def _register_lease_watchdog(
         # startup recover() remains the only re-enqueue path.
         expired = await store.list_expired_running_jobs(now=clock.now())
         jobs_lease_expired.set(len(expired))
+        counts = await store.count_jobs_by_status()
+        queue_depth.set(counts.get(JobStatus.PENDING, 0))
         for job in expired:
             logger.warning(
                 "job %s (%s) is RUNNING past its lease (%s)",
@@ -328,6 +350,59 @@ def _register_lease_watchdog(
     queue.register_periodic(
         name="lease_watchdog", schedule=crontab(minute="*"), handler=_lease_watchdog
     )
+
+
+def _register_periodics(
+    *,
+    settings: Settings,
+    queue: HueyJobQueue,
+    store: MetadataStore,
+    clock: Clock,
+    forget: ForgetService,
+    idle_detector: IdleDetector,
+    clustering: ClusterRunService,
+    watches: WatchService,
+) -> None:
+    from huey import crontab  # noqa: PLC0415 — scheduling detail
+
+    queue.register_periodic(
+        name="verify_tombstones",
+        schedule=crontab(minute="*/10"),
+        handler=forget.verify_tombstones,
+    )
+    _register_lease_watchdog(queue=queue, store=store, clock=clock)
+
+    async def _idle_tick() -> None:
+        if await idle_detector.should_run():
+            await clustering.request_run(trigger="idle")
+
+    queue.register_periodic(
+        name="cluster_idle_tick", schedule=crontab(minute="*"), handler=_idle_tick
+    )
+    if settings.cluster.cron is not None:
+        fields = settings.cluster.cron.split()
+        cron_schedule = crontab(
+            minute=fields[0],
+            hour=fields[1] if len(fields) > 1 else "*",
+            day=fields[2] if len(fields) > 2 else "*",
+            month=fields[3] if len(fields) > 3 else "*",
+            day_of_week=fields[4] if len(fields) > 4 else "*",
+        )
+
+        async def _cron_tick() -> None:
+            await clustering.request_run(trigger="cron")
+
+        queue.register_periodic(
+            name="cluster_cron", schedule=cron_schedule, handler=_cron_tick
+        )
+    if settings.watch.poll_tick_enabled:
+
+        async def _watch_tick() -> None:
+            await watches.tick()
+
+        queue.register_periodic(
+            name="watch_poll_tick", schedule=crontab(minute="*"), handler=_watch_tick
+        )
 
 
 def _build_surface_embedder(settings: Settings) -> "Model2VecSurfaceEmbedder | None":
@@ -377,7 +452,10 @@ def _build_reranker(settings: Settings) -> Reranker | None:
 
 
 def _build_extractors() -> list[ContentExtractor]:
-    extractors: list[ContentExtractor] = [PypdfExtractor()]
+    extractors: list[ContentExtractor] = [
+        PypdfExtractor(),
+        YoutubeTranscriptExtractor(),
+    ]
     try:
         from refindery.adapters.extraction.pulpie_html import (  # noqa: PLC0415 — lazy: requires the html extra
             PulpieHtmlExtractor,
@@ -387,6 +465,34 @@ def _build_extractors() -> list[ContentExtractor]:
     except ExtractionUnavailableError:
         pass  # html extra not installed; body_html ingest fails with install hint
     return extractors
+
+
+def _build_youtube(settings: Settings) -> tuple[Fetcher | None, YoutubeBackend | None]:
+    """Build the caption fetcher + shared yt-dlp backend, or (None, None)."""
+    if not settings.fetch.youtube_captions:
+        return None, None
+    try:
+        backend = YtDlpBackend()
+    except ExtractionUnavailableError:
+        logger.info(
+            "yt-dlp not installed; YouTube URLs fetch as plain pages "
+            "(install the 'youtube' extra for transcripts)"
+        )
+        return None, None
+    transcriber = (
+        build_transcriber(model=settings.fetch.youtube_whisper_model)
+        if settings.fetch.youtube_transcribe_fallback
+        else None
+    )
+    fetcher = YoutubeCaptionFetcher(
+        backend=backend,
+        transcriber=transcriber,
+        langs=settings.fetch.youtube_caption_langs,
+        allow_auto=settings.fetch.youtube_allow_auto_captions,
+        transcribe_fallback=settings.fetch.youtube_transcribe_fallback,
+        timeout_s=settings.fetch.youtube_timeout_s,
+    )
+    return fetcher, backend
 
 
 def build_container(settings: Settings) -> Container:
@@ -406,8 +512,14 @@ def build_container(settings: Settings) -> Container:
         overlap_tokens=settings.chunking.overlap_tokens,
         hard_max_tokens=settings.chunking.hard_max_tokens,
     )
-    fetcher = HttpFetcher(
+    http_fetcher = HttpFetcher(
         timeout_s=settings.fetch.timeout_s, max_bytes=settings.fetch.max_bytes
+    )
+    youtube_fetcher, youtube_backend = _build_youtube(settings)
+    fetcher: Fetcher = (
+        http_fetcher
+        if youtube_fetcher is None
+        else RoutingFetcher(default=http_fetcher, youtube=youtube_fetcher)
     )
     router = ExtractionRouter(_build_extractors())
     registry = ModelRegistry(
@@ -427,6 +539,10 @@ def build_container(settings: Settings) -> Container:
         router=router,
         pooling=settings.indexing.page_vector_pooling,
     )
+    events = JobEventBus(
+        queue_size=settings.events.queue_size,
+        max_subscribers=settings.events.max_subscribers,
+    )
     queue = HueyJobQueue(
         path=settings.huey.path,
         store=store,
@@ -437,6 +553,7 @@ def build_container(settings: Settings) -> Container:
             JobKind.FETCH_AND_INDEX: indexing.handle_fetch_and_index,
         },
         on_dead=indexing.mark_page_dead,
+        events=events,
     )
     indexing.set_queue(queue)
     ingest = IngestService(
@@ -541,38 +658,35 @@ def build_container(settings: Settings) -> Container:
     )
     queue.add_handler(JobKind.EVAL_REPLAY, admin_eval.handle_job)
 
-    from huey import crontab  # noqa: PLC0415 — scheduling detail
-
-    queue.register_periodic(
-        name="verify_tombstones",
-        schedule=crontab(minute="*/10"),
-        handler=forget.verify_tombstones,
-    )
-    _register_lease_watchdog(queue=queue, store=store, clock=clock)
-
-    async def _idle_tick() -> None:
-        if await idle_detector.should_run():
-            await clustering.request_run(trigger="idle")
-
-    queue.register_periodic(
-        name="cluster_idle_tick", schedule=crontab(minute="*"), handler=_idle_tick
-    )
-    if settings.cluster.cron is not None:
-        fields = settings.cluster.cron.split()
-        cron_schedule = crontab(
-            minute=fields[0],
-            hour=fields[1] if len(fields) > 1 else "*",
-            day=fields[2] if len(fields) > 2 else "*",
-            month=fields[3] if len(fields) > 3 else "*",
-            day_of_week=fields[4] if len(fields) > 4 else "*",
+    sources: dict[WatchKind, WatchSource] = {
+        WatchKind.RSS: RssWatchSource(fetcher=fetcher)
+    }
+    if youtube_backend is not None:
+        sources[WatchKind.YOUTUBE] = YoutubeWatchSource(
+            backend=youtube_backend,
+            max_entries=settings.watch.youtube_max_entries,
+            timeout_s=settings.fetch.youtube_timeout_s,
         )
+    watches = WatchService(
+        store=store,
+        queue=queue,
+        clock=clock,
+        ingest=ingest,
+        sources=sources,
+        settings=settings.watch,
+    )
+    queue.add_handler(JobKind.POLL_WATCH, watches.handle_poll_watch)
 
-        async def _cron_tick() -> None:
-            await clustering.request_run(trigger="cron")
-
-        queue.register_periodic(
-            name="cluster_cron", schedule=cron_schedule, handler=_cron_tick
-        )
+    _register_periodics(
+        settings=settings,
+        queue=queue,
+        store=store,
+        clock=clock,
+        forget=forget,
+        idle_detector=idle_detector,
+        clustering=clustering,
+        watches=watches,
+    )
     return Container(
         settings=settings,
         clock=clock,
@@ -599,5 +713,7 @@ def build_container(settings: Settings) -> Container:
         compare=compare,
         metrics_snapshotter=metrics_snapshotter,
         admin_eval=admin_eval,
+        watches=watches,
+        events=events,
         reranker=reranker,
     )

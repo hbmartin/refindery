@@ -17,6 +17,8 @@ from pathlib import Path
 
 import duckdb
 
+from refindery.adapters.observability.metrics import query_log_dropped_total
+
 logger = logging.getLogger(__name__)
 
 _SENTINEL = None
@@ -32,9 +34,20 @@ def open_read_only(path: Path) -> duckdb.DuckDBPyConnection:
     The sink opens its write connection per batch and CHECKPOINTs on close, so a
     reader only has to retry across the brief window a batch holds the file.
     """
+    return _open_with_retry(path, read_only=True)
+
+
+def _open_with_retry(path: Path, *, read_only: bool) -> duckdb.DuckDBPyConnection:
+    """Retry across the window a differently-configured connection holds the file.
+
+    DuckDB rejects concurrent connections with different configurations, and
+    the collision is symmetric: readers must wait out a write batch, and the
+    writer must wait out a momentary read-only connection (offline eval polls
+    the file between batches). Both sides hold connections briefly.
+    """
     for attempt in range(_READ_RETRIES):
         try:
-            return duckdb.connect(str(path), read_only=True)
+            return duckdb.connect(str(path), read_only=read_only)
         except duckdb.ConnectionException:
             if attempt == _READ_RETRIES - 1:
                 raise
@@ -73,6 +86,7 @@ class DuckDbSink:
             self._queue.put_nowait((table, values))
         except queue.Full:
             self.dropped += 1
+            query_log_dropped_total.inc()
             try:  # drop-oldest keeps the log fresh under pressure
                 self._queue.get_nowait()
                 self._queue.put_nowait((table, values))
@@ -139,7 +153,7 @@ class DuckDbSink:
         for table, values in batch:
             by_table.setdefault(table, []).append(values)
         try:
-            conn = duckdb.connect(str(self._path))
+            conn = _open_with_retry(self._path, read_only=False)
             try:
                 for table, rows in by_table.items():
                     spec = self._tables[table]
@@ -154,3 +168,4 @@ class DuckDbSink:
         except Exception:
             logger.exception("observability sink flush failed; batch dropped")
             self.dropped += len(batch)
+            query_log_dropped_total.inc(len(batch))

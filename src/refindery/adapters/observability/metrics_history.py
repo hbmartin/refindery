@@ -190,3 +190,24 @@ def current_gauges(metric: str) -> list[MetricSeries]:
         if family.name == metric and family.type == "gauge"
         for sample in family.samples
     ]
+
+
+def current_counters(metric: str) -> list[MetricSeries]:
+    """Return current counter samples for a metric family.
+
+    Pass the stripped family name (prometheus_client removes the ``_total``
+    suffix from counter family names). Values are process-lifetime totals.
+    """
+    now = datetime.now(tz=UTC)
+    return [
+        MetricSeries(
+            sample=sample.name,
+            labels=dict(sample.labels),
+            metric_type=family.type,
+            points=[MetricPoint(ts=now, value=float(sample.value))],
+        )
+        for family in registry.collect()
+        if family.name == metric and family.type == "counter"
+        for sample in family.samples
+        if sample.name.endswith("_total")
+    ]

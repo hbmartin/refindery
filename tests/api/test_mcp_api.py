@@ -129,6 +129,8 @@ async def test_read_only_tools_by_default(make_client):
         "cluster_pages",
         "entities",
         "compare",
+        "list_watches",
+        "get_watch",
     }
     search_tool = next(t for t in tools if t["name"] == "search")
     assert GROUNDING in search_tool["description"].lower()
@@ -143,7 +145,14 @@ async def test_mutating_tools_opt_in(make_client):
         ) as client:
             tools = await _list_tools(client)
     names = {t["name"] for t in tools}
-    assert {"add_page", "forget"} <= names
+    assert {
+        "add_page",
+        "forget",
+        "create_watch",
+        "update_watch",
+        "delete_watch",
+        "run_watch",
+    } <= names
 
 
 async def test_mutating_tool_call_respects_token_scope(make_client):

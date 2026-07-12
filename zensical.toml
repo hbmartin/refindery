@@ -29,6 +29,7 @@ nav = [
   { "Guides" = [
     { "Overview" = "guides/index.md" },
     { "Ingesting pages" = "guides/ingest.md" },
+    { "Watches" = "guides/watches.md" },
     { "Searching" = "guides/search.md" },
     { "MCP for agents" = "guides/mcp.md" },
     { "Evaluation" = "guides/eval.md" },

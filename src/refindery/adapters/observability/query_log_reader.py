@@ -40,6 +40,16 @@ FROM feedback
 ORDER BY ts
 """
 
+# timing_ms is a JSON column; ->> extracts the total as text.
+_QUANTILES_SQL = """
+SELECT
+  COUNT(*),
+  quantile_cont(CAST(timing_ms ->> '$.total' AS DOUBLE), 0.50),
+  quantile_cont(CAST(timing_ms ->> '$.total' AS DOUBLE), 0.95)
+FROM query_log
+WHERE ts >= coalesce(?, ts) AND kind = ?
+"""
+
 _DETAIL_SQL = """
 SELECT query_id, epoch_us(ts), kind, compare_id, query_text, params,
        active_model, reranker_model, candidate_set, dense_hits, sparse_hits,
@@ -51,6 +61,15 @@ WHERE ts >= coalesce(?, ts)
 ORDER BY ts DESC
 LIMIT ?
 """
+
+
+@dataclass(frozen=True, slots=True)
+class LatencyQuantiles:
+    """Latency quantiles over logged runs of one kind."""
+
+    runs: int
+    p50_ms: float
+    p95_ms: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +143,20 @@ class DuckDbQueryLogReader:
                 candidate_page_ids,
             ) in rows
         ]
+
+    def read_latency_quantiles(
+        self, *, since: datetime | None = None, kind: str = "search"
+    ) -> LatencyQuantiles | None:
+        """p50/p95 of total timing over runs of one kind; None when no rows."""
+        if since is not None and since.tzinfo is None:
+            since = since.replace(tzinfo=UTC)
+        with open_read_only(self._path) as conn:
+            row = conn.execute(_QUANTILES_SQL, [since, kind]).fetchone()
+        if row is None or not row[0] or row[1] is None or row[2] is None:
+            return None
+        return LatencyQuantiles(
+            runs=int(row[0]), p50_ms=float(row[1]), p95_ms=float(row[2])
+        )
 
     def read_labels(self) -> dict[QueryId, dict[PageId, bool]]:
         """Feedback labels per query; rows are ts-ordered so the latest wins."""

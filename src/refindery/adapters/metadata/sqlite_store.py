@@ -344,17 +344,23 @@ class _EntityClusterMixin:
         return None if row is None else _entity_from_row(row)
 
     async def resolve_entity(self, ref: str) -> Entity | None:
-        """Resolve id -> canonical form -> alias."""
+        """Resolve id -> canonical form -> alias.
+
+        Collisions (same canonical form across types, or a shared alias)
+        resolve deterministically: ids are time-ordered uuid7, so ``ORDER BY
+        id`` makes the oldest entity win every time.
+        """
         if (entity := await self.get_entity(EntityId(ref))) is not None:
             return entity
         cursor = await self.conn.execute(
-            "SELECT * FROM entities WHERE canonical_form = ? LIMIT 1", (ref,)
+            "SELECT * FROM entities WHERE canonical_form = ? ORDER BY id LIMIT 1",
+            (ref,),
         )
         if (row := await cursor.fetchone()) is not None:
             return _entity_from_row(row)
         cursor = await self.conn.execute(
             "SELECT e.* FROM entities e JOIN entity_aliases a ON a.entity_id = e.id "
-            "WHERE a.surface_form = ? OR a.normalized = ? LIMIT 1",
+            "WHERE a.surface_form = ? OR a.normalized = ? ORDER BY e.id LIMIT 1",
             (ref, ref.casefold()),
         )
         row = await cursor.fetchone()

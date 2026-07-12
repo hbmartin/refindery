@@ -43,6 +43,14 @@ class PageNotFoundError(RefinderyError):
         super().__init__(f"page {page_id!r} not found")
 
 
+class EntityNotFoundError(RefinderyError):
+    """No entity matches the given reference (id, canonical form, or alias)."""
+
+    def __init__(self, ref: str) -> None:
+        self.ref = ref
+        super().__init__(f"entity {ref!r} not found")
+
+
 class PageHasNoBodyError(RefinderyError):
     """The page reached the indexing pipeline without a resolved body."""
 

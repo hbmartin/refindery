@@ -10,12 +10,14 @@ import pytest
 from pydantic import ValidationError
 
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
+from refindery.domain.entities import Entity, EntityType
 from refindery.domain.ids import (
     ClusterId,
     JobId,
     PageId,
     new_blacklist_id,
     new_chunk_id,
+    new_entity_id,
     new_job_id,
     new_page_id,
     new_watch_id,
@@ -521,3 +523,27 @@ async def test_count_tombstones_by_status(store):
     assert purged == [page.id]
     counts = await store.count_tombstones_by_status()
     assert counts == {TombstoneStatus.PENDING: 1}
+
+
+async def test_resolve_entity_is_deterministic_on_collisions(store):
+    older = new_entity_id()
+    newer = new_entity_id()
+    # Insert the newer entity first: without ORDER BY the scan order would
+    # surface it, but the contract is that the oldest id wins every time.
+    collisions = ((newer, EntityType.CONCEPT), (older, EntityType.TECHNOLOGY))
+    for entity_id, entity_type in collisions:
+        await store.create_entity(
+            entity=Entity(id=entity_id, canonical_form="python", type=entity_type),
+            surface_form="Python",
+            normalized="python",
+            key="python",
+        )
+
+    by_form = await store.resolve_entity("python")
+    assert by_form is not None
+    assert by_form.id == older
+
+    # The shared alias path (surface form) resolves to the same winner.
+    by_alias = await store.resolve_entity("Python")
+    assert by_alias is not None
+    assert by_alias.id == older

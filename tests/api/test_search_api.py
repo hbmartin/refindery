@@ -313,15 +313,42 @@ async def test_search_cluster_filter_uses_live_membership(harness):
     assert {r["page_id"] for r in response.json()["results"]} == {ids[1]}
 
 
-async def test_unknown_entity_filter_yields_empty(harness):
+async def test_unknown_entity_filter_returns_404(harness):
     client, _container, _ids = harness
     response = await client.post(
         "/v1/search",
         json={"query": "anything", "filters": {"entity": "python"}, "suggest": 0},
         headers=AUTH,
     )
-    assert response.status_code == 200
-    assert response.json()["results"] == []
+    assert response.status_code == 404
+    assert "python" in response.json()["detail"]
+
+
+async def test_entity_filter_too_broad_returns_422(harness, monkeypatch):
+    client, container, ids = harness
+    await container.canonicalization.link_mentions(
+        page_id=ids[1],
+        mentions=[
+            Mention(
+                surface_form="HDBSCAN",
+                type="technology",
+                char_start=0,
+                char_end=7,
+            )
+        ],
+    )
+
+    async def too_many(entity_id: str) -> list[str]:
+        return [f"page-{i}" for i in range(10_001)]
+
+    monkeypatch.setattr(container.store, "page_ids_for_entity", too_many)
+    response = await client.post(
+        "/v1/search",
+        json={"query": "anything", "filters": {"entity": "HDBSCAN"}, "suggest": 0},
+        headers=AUTH,
+    )
+    assert response.status_code == 422
+    assert "HDBSCAN" in response.json()["detail"]
 
 
 async def test_similar_endpoint(harness):

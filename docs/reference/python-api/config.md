@@ -7,10 +7,4 @@ the [Configuration overview](../../configuration/index.md) for how the
 environment mapping works, and the
 [Settings reference](../../configuration/reference.md) for a task-oriented tour.
 
-::: refindery.config
-    options:
-      show_root_heading: false
-      members_order: source
-      show_if_no_docstring: true
-      filters:
-        - "!^_"
+{{ python_api_reference("refindery.config", recursive=false) }}

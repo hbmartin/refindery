@@ -1,11 +1,11 @@
 # Python API
 
-These pages are generated directly from the source docstrings and type
-annotations with [mkdocstrings](https://mkdocstrings.github.io/), so they track
-the code. They document the **stable internal seams** of Refindery — the
-configuration model, the domain types, the port protocols, and the headline
-application services — for contributors and for anyone embedding Refindery as a
-library.
+These pages discover modules from the source tree at build time and render their
+docstrings and type annotations with
+[mkdocstrings](https://mkdocstrings.github.io/), so new domain modules, ports,
+and services appear without editing the docs navigation or a handwritten symbol
+list. They document the **stable internal seams** of Refindery for contributors
+and for anyone embedding Refindery as a library.
 
 !!! note "Generated statically"
     The Python handler analyzes the source with
@@ -18,7 +18,7 @@ library.
 | Page | Module(s) | What it covers |
 | --- | --- | --- |
 | [Configuration](config.md) | `refindery.config` | `Settings` and every nested settings group. |
-| [Domain models](domain.md) | `refindery.domain.models` | Pages, chunks, jobs, clusters, entities, enums. |
+| [Domain models](domain.md) | `refindery.domain.*` | Models, identifiers, URL logic, retrieval and ranking algorithms. |
 | [Ports](ports.md) | `refindery.application.ports.*` | The `Protocol` contracts every adapter implements. |
 | [Services](services.md) | `refindery.application.services.*` | The use-case orchestration layer. |
 

@@ -166,6 +166,7 @@ def build_test_container(
             JobKind.FETCH_AND_INDEX: indexing.handle_fetch_and_index,
         },
         on_dead=indexing.mark_page_dead,
+        on_retry=indexing.mark_page_queued,
         events=events,
     )
     indexing.set_queue(queue)

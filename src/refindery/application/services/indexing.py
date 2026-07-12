@@ -129,6 +129,15 @@ class IndexingService:
             logger.warning("page %s dead after job %s: %s", page_id, job.id, error)
             await self._store.set_page_status(page_id=page_id, status=PageStatus.DEAD)
 
+    async def mark_page_queued(self, job: Job) -> None:
+        """Manual-retry callback: undo mark_page_dead; the page re-enters the queue."""
+        if job.kind not in {JobKind.INDEX_PAGE, JobKind.FETCH_AND_INDEX}:
+            return
+        page_id = PageId(job.payload.get("page_id", ""))
+        if page_id:
+            logger.info("page %s re-queued by manual retry of job %s", page_id, job.id)
+            await self._store.set_page_status(page_id=page_id, status=PageStatus.QUEUED)
+
     # -- pipeline --------------------------------------------------------------
 
     async def _require_page(self, page_id: PageId) -> Page:

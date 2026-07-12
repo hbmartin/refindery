@@ -18,6 +18,7 @@ LanceDB's Python API is synchronous; every method hops to a thread.
 """
 
 import asyncio
+import logging
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -41,7 +42,15 @@ from refindery.domain.models import EmbeddingModel
 from refindery.domain.retrieval import ChunkHit
 from refindery.domain.rollup import Vector
 
+logger = logging.getLogger(__name__)
+
 _CHUNKS_TABLE = "chunks"
+_FTS_INDEX_NAME = "text_idx"
+# Positions + retained stop words make quoted-phrase queries work on the
+# sparse arm; the default positionless config RAISES on them and stop-word
+# queries match nothing (see tests/integration/test_lancedb_fts.py). The
+# larger index is irrelevant at personal scale.
+_FTS_CONFIG = FTS(with_position=True, remove_stop_words=False)
 
 if TYPE_CHECKING:
     from lancedb.query import LanceVectorQueryBuilder
@@ -100,6 +109,25 @@ def _vectors_schema(dim: int) -> pa.Schema:
     )
 
 
+def _fts_index_current(chunks: lancedb.table.Table) -> bool:
+    """Whether the text FTS index exists with the config this adapter wants.
+
+    ``index_details`` exposes the live index config, so the index itself is
+    the migration fingerprint — only the two knobs this adapter sets are
+    compared (other keys use Rust-side names that differ from the ``FTS``
+    dataclass).
+    """
+    for index in chunks.list_indices():
+        if index.name != _FTS_INDEX_NAME:
+            continue
+        details = index.index_details or {}
+        return (
+            details.get("with_position") is True
+            and details.get("remove_stop_words") is False
+        )
+    return False
+
+
 def _payload_row(point: ChunkPoint) -> dict[str, object]:
     return {
         "chunk_id": point.chunk_id,
@@ -131,8 +159,14 @@ class LanceDbVectorStore:
             chunks = self._db.create_table(
                 _CHUNKS_TABLE, schema=_chunks_schema(), exist_ok=True
             )
-            if not any(i.name == "text_idx" for i in chunks.list_indices()):
-                chunks.create_index("text", config=FTS(), replace=True)
+            if not _fts_index_current(chunks):
+                # First boot, or a one-time synchronous rebuild when upgrading
+                # an install created with the positionless config.
+                logger.info(
+                    "building the phrase-capable FTS index "
+                    "(positions on, stop words retained)"
+                )
+                chunks.create_index("text", config=_FTS_CONFIG, replace=True)
             for model in models:
                 self._db.create_table(
                     _vectors_table(model.id),

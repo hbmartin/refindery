@@ -103,6 +103,22 @@ async def test_sparse_query_finds_fresh_writes_immediately(vector_store):
     assert any(h.page_id == "p10" for h in hits_single)
 
 
+async def test_sparse_query_tolerates_quoted_phrases(vector_store):
+    # Quoted phrases must never crash the sparse arm (LanceDB's positionless
+    # default index raised on them). Semantics legitimately differ by
+    # backend — LanceDB matches positional phrases, Qdrant's BM25 treats the
+    # query as a bag of words — so the shared contract is only "no error,
+    # adjacency doc among the hits".
+    await vector_store.upsert_chunks(
+        [
+            _point("adj", 0, "hexagonal ports and adapters", days=1),
+            _point("rev", 0, "ports for the hexagonal system", days=2),
+        ]
+    )
+    hits = await vector_store.sparse_query(text='"hexagonal ports"', limit=5)
+    assert any(h.page_id == "adj" for h in hits)
+
+
 async def test_hybrid_fused_equals_shared_rrf(vector_store):
     points = _corpus_points()
     await vector_store.upsert_chunks(points)

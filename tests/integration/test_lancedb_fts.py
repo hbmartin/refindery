@@ -15,12 +15,19 @@ changes any assertion here, revisit ``adapters/vector/lancedb_store.py``:
   remove_stop_words=False)``.
 """
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import lancedb
+import numpy as np
 import pyarrow as pa
 import pytest
 from lancedb.index import FTS
+
+from refindery.adapters.vector.lancedb_store import LanceDbVectorStore
+from refindery.application.ports.vector_store import ChunkPoint
+from refindery.domain.ids import ChunkId, PageId
+from refindery.domain.models import EmbeddingModel, ModelStatus
 
 _SCHEMA = pa.schema([pa.field("chunk_id", pa.string()), pa.field("text", pa.string())])
 
@@ -143,3 +150,75 @@ def test_phrase_queries_require_positions(tmp_path):
     assert _found(positioned, '"hexagonal ports"') == ["adj"]
     assert _found(positioned, '"ports hexagonal"') == []
     assert set(_found(positioned, "hexagonal ports")) == {"adj", "rev"}
+
+
+# -- adapter-level behavior (LanceDbVectorStore drives the same lancedb) -----
+
+_MODEL = EmbeddingModel(
+    id="model-a",
+    provider="fake",
+    model_name="model-a",
+    dim=4,
+    max_input_tokens=32_000,
+    is_active=True,
+    status=ModelStatus.READY,
+    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+)
+
+
+def _chunk_point(page: str, text: str) -> ChunkPoint:
+    return ChunkPoint(
+        chunk_id=ChunkId(f"{page}:0"),
+        page_id=PageId(page),
+        ordinal=0,
+        text=text,
+        vectors={_MODEL.id: np.zeros(4, dtype=np.float32)},
+        domain=f"{page}.example",
+        first_seen_at=datetime(2026, 6, 1, tzinfo=UTC),
+        cluster_id=None,
+    )
+
+
+async def test_adapter_quoted_phrase_matches_adjacency_only(tmp_path):
+    store = LanceDbVectorStore(path=tmp_path / "lance")
+    await store.ensure_schema([_MODEL])
+    await store.upsert_chunks(
+        [
+            _chunk_point("adj", "hexagonal ports and adapters keep the core pure"),
+            _chunk_point("rev", "ports for the hexagonal system live in the app"),
+        ]
+    )
+
+    hits = await store.sparse_query(text='"hexagonal ports"', limit=5)
+
+    assert [hit.page_id for hit in hits] == ["adj"]
+    await store.close()
+
+
+async def test_ensure_schema_migrates_positionless_index(tmp_path):
+    store = LanceDbVectorStore(path=tmp_path / "lance")
+    await store.ensure_schema([_MODEL])
+    await store.upsert_chunks(
+        [_chunk_point("adj", "hexagonal ports and adapters keep the core pure")]
+    )
+    # Simulate an install created before the phrase-capable config; a second
+    # connection avoids reaching into the adapter's internals.
+    chunks = lancedb.connect(str(tmp_path / "lance")).open_table("chunks")
+    chunks.create_index("text", config=FTS(), replace=True)
+    with pytest.raises(RuntimeError, match="position"):
+        await store.sparse_query(text='"hexagonal ports"', limit=5)
+
+    await store.ensure_schema([_MODEL])  # detects the downgrade and rebuilds
+
+    # Re-open: the pre-migration handle stays pinned to its opened version.
+    rebuilt = lancedb.connect(str(tmp_path / "lance")).open_table("chunks")
+    details = next(
+        index.index_details
+        for index in rebuilt.list_indices()
+        if index.name == "text_idx"
+    )
+    assert details is not None
+    assert details.get("with_position") is True
+    hits = await store.sparse_query(text='"hexagonal ports"', limit=5)
+    assert [hit.page_id for hit in hits] == ["adj"]
+    await store.close()

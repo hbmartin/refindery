@@ -101,6 +101,12 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
   user, create them under `umask 077`, and keep the scrape credentials path aligned.
 - Escape Markdown table delimiters inside structural renderers such as schema-type
   unions; escaping only prose cells does not protect generated type columns.
+- When retrying queued jobs, restore derived page state before publishing the
+  pending-job event and re-enqueueing; SSE observers and handlers then see the
+  page as queued instead of stale-dead.
+- After rebasing exhaustive `JobKind` inventories, account for durable kinds
+  added on main by centralizing their idempotency keys and extending the
+  inventory test; a textually clean replay can still leave enum coverage stale.
 - Bound persisted scheduling intervals at every external configuration boundary;
   values that fit SQLite integers can still overflow Python datetime arithmetic
   and leave due rows permanently consuming scheduler capacity.

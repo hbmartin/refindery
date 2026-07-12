@@ -28,6 +28,7 @@ from refindery.domain.errors import (
     WatchSourceUnavailableError,
 )
 from refindery.domain.ids import JobId, WatchId, new_watch_id
+from refindery.domain.job_keys import poll_watch_key
 from refindery.domain.models import (
     IngestBlacklisted,
     IngestQueued,
@@ -176,7 +177,7 @@ class WatchService:
         job_id = await self._queue.enqueue(
             kind=JobKind.POLL_WATCH,
             payload={"watch_id": watch.id},
-            idempotency_key=f"poll_watch:{watch.id}:manual:{now.isoformat()}",
+            idempotency_key=poll_watch_key(watch_id=watch.id, run_at=now, manual=True),
         )
         await self._store.mark_watch_run(
             watch_id=watch.id,
@@ -199,8 +200,8 @@ class WatchService:
                 job_id = await self._queue.enqueue(
                     kind=JobKind.POLL_WATCH,
                     payload={"watch_id": watch.id},
-                    idempotency_key=(
-                        f"poll_watch:{watch.id}:{watch.next_run_at.isoformat()}"
+                    idempotency_key=poll_watch_key(
+                        watch_id=watch.id, run_at=watch.next_run_at
                     ),
                 )
                 await self._store.mark_watch_run(

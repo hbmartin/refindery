@@ -36,6 +36,7 @@ from refindery.domain.errors import (
     PageNotFoundError,
 )
 from refindery.domain.ids import ChunkId, PageId
+from refindery.domain.job_keys import extract_entities_key
 from refindery.domain.models import Job, JobKind, Page, PageStatus
 from refindery.domain.rollup import PoolingStrategy, Vector, page_vector
 
@@ -238,12 +239,14 @@ class IndexingService:
         return reconciled
 
     async def _enqueue_entity_extraction(self, page: Page) -> None:
-        if self._queue is None or page.content_hash is None:
+        if self._queue is None or (page_hash := page.content_hash) is None:
             return
         await self._queue.enqueue(
             kind=JobKind.EXTRACT_ENTITIES,
-            payload={"page_id": page.id, "content_hash": page.content_hash},
-            idempotency_key=f"entities:{page.id}:{page.content_hash}",
+            payload={"page_id": page.id, "content_hash": page_hash},
+            idempotency_key=extract_entities_key(
+                page_id=page.id, content_hash=page_hash
+            ),
         )
 
     async def _cleanup_failed_core(self, page: Page) -> None:

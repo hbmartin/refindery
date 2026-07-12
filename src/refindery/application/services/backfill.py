@@ -18,6 +18,7 @@ from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.vector_store import ChunkPoint, VectorStore
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.domain.ids import PageId
+from refindery.domain.job_keys import backfill_model_key
 from refindery.domain.models import Job, JobKind, ModelBackfill, ModelStatus
 from refindery.domain.rollup import PoolingStrategy, page_vector
 
@@ -137,7 +138,7 @@ class BackfillService:
         await self._queue.enqueue(
             kind=JobKind.BACKFILL_MODEL,
             payload={"model_id": model.id},
-            idempotency_key=f"backfill:{model.id}:{now.isoformat()}",
+            idempotency_key=backfill_model_key(model_id=model.id, now=now),
         )
 
     async def handle_backfill_job(self, job: Job) -> None:

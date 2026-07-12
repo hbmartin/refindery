@@ -142,7 +142,11 @@ async def retry_job(
     job_id: str,
     container: Annotated[Container, Depends(get_container)],
 ) -> JobResponse:
-    """Reset a dead job to pending and re-enqueue it; other states return 409."""
+    """Reset a dead job to pending and re-enqueue it; other states return 409.
+
+    Retrying an index job also resets its page from ``dead`` back to
+    ``queued``, so page status tracks the re-enqueued work.
+    """
     result = await _retry_one(container, job_id)
     match result:
         case JobRetryBatchMissingResult():

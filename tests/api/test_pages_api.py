@@ -9,7 +9,14 @@ import pytest
 
 from refindery.api.app import create_app
 from refindery.domain.ids import JobId, PageId, new_blacklist_id
-from refindery.domain.models import BlacklistKind, Page, PageStatus
+from refindery.domain.models import (
+    BlacklistKind,
+    Job,
+    JobKind,
+    JobStatus,
+    Page,
+    PageStatus,
+)
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
 
 if TYPE_CHECKING:
@@ -454,7 +461,8 @@ async def test_reconcile_isolates_per_page_enqueue_failures(harness, monkeypatch
         assert data["status"] == "indexed"
 
 
-async def test_dead_job_visible_and_page_dead(client):
+async def test_dead_job_visible_and_page_dead(harness):
+    client, container = harness
     # Fetch path with no fake response -> job fails -> dead after 2 attempts.
     payload = {"url": "https://example.com/will-fail"}
     response = await client.post("/v1/pages", json=payload, headers=AUTH)
@@ -468,7 +476,27 @@ async def test_dead_job_visible_and_page_dead(client):
     assert len(jobs["jobs"]) == 1
     job_id = jobs["jobs"][0]["job_id"]
 
-    # Manual retry runs it again (still failing -> dead again).
+    # The retry hook filters by kind: a dead job of a non-index kind must
+    # leave the page untouched.
+    now = datetime.now(UTC)
+    entity_job = Job(
+        id=JobId("synthetic-entities-job"),
+        kind=JobKind.EXTRACT_ENTITIES,
+        payload={"page_id": page_id},
+        status=JobStatus.DEAD,
+        idempotency_key="entities:synthetic",
+        created_at=now,
+        updated_at=now,
+    )
+    await container.indexing.mark_page_queued(entity_job)
+    unchanged = await client.get(f"/v1/pages/{page_id}/status", headers=AUTH)
+    assert unchanged.json()["status"] == "dead"
+
+    # Stop the consumer so the retried job stays pending: the page reset is
+    # observable instead of racing the immediate re-execution.
+    await container.queue.stop()
     retried = await client.post(f"/v1/jobs/{job_id}/retry", headers=AUTH)
     assert retried.status_code == 200
     assert retried.json()["status"] == "pending"
+    requeued = await client.get(f"/v1/pages/{page_id}/status", headers=AUTH)
+    assert requeued.json()["status"] == "queued"

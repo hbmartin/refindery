@@ -13,11 +13,14 @@ from refindery.domain.ids import (
     ClusterId,
     JobId,
     PageId,
+    new_blacklist_id,
     new_chunk_id,
     new_job_id,
     new_page_id,
 )
 from refindery.domain.models import (
+    BlacklistKind,
+    BlacklistRule,
     Chunk,
     Cluster,
     EmbeddingModel,
@@ -27,6 +30,7 @@ from refindery.domain.models import (
     ModelStatus,
     Page,
     PageStatus,
+    TombstoneStatus,
 )
 
 NOW = datetime(2026, 7, 8, 12, 0, 0, tzinfo=UTC)
@@ -414,3 +418,31 @@ async def test_indexed_pages_missing_entity_extraction(store):
     # `covered` has a job for its current hash; `stale`'s job predates a
     # content change and `missing` never got one; `queued` is not indexed.
     assert {page.id for page in pages} == {missing.id, stale.id}
+
+
+async def test_count_jobs_by_status(store):
+    assert await store.count_jobs_by_status() == {}
+    first = _job("k1")
+    second = _job("k2")
+    dead = _job("k3")
+    for job in (first, second, dead):
+        assert await store.create_job(job)
+    await store.mark_job_dead(job_id=dead.id, last_error="boom", now=NOW)
+    counts = await store.count_jobs_by_status()
+    assert counts == {JobStatus.PENDING: 2, JobStatus.DEAD: 1}
+
+
+async def test_count_tombstones_by_status(store):
+    assert await store.count_tombstones_by_status() == {}
+    page = _page("https://example.com/purge-me")
+    await store.insert_page(page)
+    rule = BlacklistRule(
+        id=new_blacklist_id(),
+        pattern="https://example.com/purge-me",
+        kind=BlacklistKind.URL,
+        created_at=NOW,
+    )
+    _rule, purged = await store.purge_and_blacklist(rule)
+    assert purged == [page.id]
+    counts = await store.count_tombstones_by_status()
+    assert counts == {TombstoneStatus.PENDING: 1}

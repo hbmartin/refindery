@@ -16,6 +16,7 @@ from refindery.api.routes import (
     clusters,
     compare,
     entities,
+    events,
     forget,
     health,
     jobs,
@@ -43,6 +44,7 @@ _AUTHENTICATED_ROUTERS = (
     models.router,
     compare.router,
     watches.router,
+    events.router,
     admin.router,
 )
 

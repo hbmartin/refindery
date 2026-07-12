@@ -17,6 +17,8 @@ from pathlib import Path
 
 import duckdb
 
+from refindery.adapters.observability.metrics import query_log_dropped_total
+
 logger = logging.getLogger(__name__)
 
 _SENTINEL = None
@@ -84,6 +86,7 @@ class DuckDbSink:
             self._queue.put_nowait((table, values))
         except queue.Full:
             self.dropped += 1
+            query_log_dropped_total.inc()
             try:  # drop-oldest keeps the log fresh under pressure
                 self._queue.get_nowait()
                 self._queue.put_nowait((table, values))
@@ -165,3 +168,4 @@ class DuckDbSink:
         except Exception:
             logger.exception("observability sink flush failed; batch dropped")
             self.dropped += len(batch)
+            query_log_dropped_total.inc(len(batch))

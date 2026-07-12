@@ -6,13 +6,25 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from refindery.api.auth import require_write
 from refindery.api.deps import get_container
-from refindery.api.schemas import JobListResponse, JobResponse
+from refindery.api.schemas import (
+    JobListResponse,
+    JobResponse,
+    JobRetryBatchMissingResult,
+    JobRetryBatchRequest,
+    JobRetryBatchResponse,
+    JobRetryBatchRetriedResult,
+    JobRetryBatchSkippedResult,
+)
 from refindery.application.container import Container
 from refindery.domain.errors import JobNotFoundError
 from refindery.domain.ids import JobId
 from refindery.domain.models import Job, JobKind, JobStatus
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
+
+_RetryOutcome = (
+    JobRetryBatchRetriedResult | JobRetryBatchSkippedResult | JobRetryBatchMissingResult
+)
 
 
 def _to_response(job: Job) -> JobResponse:
@@ -26,6 +38,40 @@ def _to_response(job: Job) -> JobResponse:
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
+
+
+def _retried_result(job: Job) -> JobRetryBatchRetriedResult:
+    return JobRetryBatchRetriedResult(
+        job_id=job.id,
+        kind=job.kind,
+        status=job.status,
+        attempts=job.attempts,
+        max_attempts=job.max_attempts,
+        last_error=job.last_error,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
+
+
+async def _retry_one(container: Container, job_id: str) -> _RetryOutcome:
+    """Retry one job; the status guard lives here (reset_job_for_retry has none)."""
+    job = await container.store.get_job(JobId(job_id))
+    if job is None:
+        return JobRetryBatchMissingResult(job_id=job_id)
+    if job.status is not JobStatus.DEAD:
+        return JobRetryBatchSkippedResult(
+            job_id=job_id,
+            status=job.status,
+            detail=f"job is {job.status}, only dead jobs can be retried",
+        )
+    try:
+        await container.queue.retry(JobId(job_id))
+    except JobNotFoundError:
+        return JobRetryBatchMissingResult(job_id=job_id)
+    refreshed = await container.store.get_job(JobId(job_id))
+    if refreshed is None:
+        return JobRetryBatchMissingResult(job_id=job_id)
+    return _retried_result(refreshed)
 
 
 @router.get("", operation_id="list_jobs", summary="List jobs")
@@ -53,6 +99,40 @@ async def list_jobs(
 
 
 @router.post(
+    "/retry",
+    operation_id="retry_jobs_batch",
+    dependencies=[Depends(require_write)],
+    summary="Retry dead jobs in bulk",
+    description=(
+        "Retry dead jobs either by explicit `job_ids` (up to 500, deduped, "
+        "results in input order) or by selector (all dead jobs, optionally "
+        "filtered by `kind`, up to `limit`). Non-dead jobs are reported as "
+        "skipped and unknown ids as not_found; the call is idempotent — a "
+        "second selector call finds nothing left to retry. Always returns 200."
+    ),
+)
+async def retry_jobs_batch(
+    body: JobRetryBatchRequest,
+    container: Annotated[Container, Depends(get_container)],
+) -> JobRetryBatchResponse:
+    """Bulk-retry dead jobs with per-item outcomes."""
+    if body.job_ids is not None:
+        targets = list(dict.fromkeys(body.job_ids))
+    else:
+        dead = await container.store.list_jobs(
+            status=JobStatus.DEAD, kind=body.kind, limit=body.limit
+        )
+        targets = [job.id for job in dead]
+    results: list[_RetryOutcome] = []
+    for job_id in targets:
+        results.append(await _retry_one(container, job_id))  # noqa: PERF401 — sequential on purpose (SQLite writes serialize)
+    retried = sum(1 for result in results if result.outcome == "retried")
+    return JobRetryBatchResponse(
+        requested=len(targets), retried=retried, results=results
+    )
+
+
+@router.post(
     "/{job_id}/retry",
     operation_id="retry_job",
     dependencies=[Depends(require_write)],
@@ -63,25 +143,15 @@ async def retry_job(
     container: Annotated[Container, Depends(get_container)],
 ) -> JobResponse:
     """Reset a dead job to pending and re-enqueue it; other states return 409."""
-    job = await container.store.get_job(JobId(job_id))
-    if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
-        )
-    if job.status is not JobStatus.DEAD:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"job is {job.status}, only dead jobs can be retried",
-        )
-    try:
-        await container.queue.retry(JobId(job_id))
-    except JobNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
-        ) from exc
-    refreshed = await container.store.get_job(JobId(job_id))
-    if refreshed is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
-        )
-    return _to_response(refreshed)
+    result = await _retry_one(container, job_id)
+    match result:
+        case JobRetryBatchMissingResult():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
+            )
+        case JobRetryBatchSkippedResult():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=result.detail
+            )
+        case _:
+            return result

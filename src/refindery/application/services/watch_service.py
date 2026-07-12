@@ -21,7 +21,11 @@ from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.watch_source import WatchItem, WatchSource
 from refindery.application.services.ingest import IngestRequest, IngestService
 from refindery.config import WatchSettings
-from refindery.domain.errors import WatchNotFoundError, WatchSourceUnavailableError
+from refindery.domain.errors import (
+    WatchFanOutError,
+    WatchNotFoundError,
+    WatchSourceUnavailableError,
+)
 from refindery.domain.ids import JobId, WatchId, new_watch_id
 from refindery.domain.models import (
     IngestBlacklisted,
@@ -38,13 +42,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
+class _UnsetValue:
+    """Sentinel that distinguishes omitted PATCH fields from explicit nulls."""
+
+
+UNSET = _UnsetValue()
+
+
+@dataclass(frozen=True, slots=True)
 class WatchPatch:
-    """Partial watch update; ``None`` leaves a field unchanged."""
+    """Partial watch update with explicit clearing for nullable fields."""
 
     enabled: bool | None = None
     interval_hours: int | None = None
-    title: str | None = None
-    config: dict[str, str] | None = None
+    title: str | None | _UnsetValue = UNSET
+    config: dict[str, str] | None | _UnsetValue = UNSET
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,9 +143,9 @@ class WatchService:
         now = self._clock.now()
         if patch.enabled is not None:
             watch.enabled = patch.enabled
-        if patch.title is not None:
+        if not isinstance(patch.title, _UnsetValue):
             watch.title = patch.title
-        if patch.config is not None:
+        if not isinstance(patch.config, _UnsetValue):
             watch.config = patch.config
         if (
             patch.interval_hours is not None
@@ -224,6 +236,10 @@ class WatchService:
             await self._record_error(watch, str(exc))
             raise
         tally = await self._fan_out(watch, items)
+        if items and tally.errors == len(items):
+            failure = WatchFanOutError(watch_id=watch.id, item_count=len(items))
+            await self._record_error(watch, str(failure))
+            raise failure
         await self._store.record_watch_result(
             watch_id=watch.id,
             status=WatchStatus.OK,

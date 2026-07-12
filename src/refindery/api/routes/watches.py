@@ -14,7 +14,7 @@ from refindery.api.schemas import (
     WatchRunAcceptedResponse,
 )
 from refindery.application.container import Container
-from refindery.application.services.watch_service import WatchPatch
+from refindery.application.services.watch_service import UNSET, WatchPatch
 from refindery.domain.errors import WatchNotFoundError
 from refindery.domain.ids import WatchId
 from refindery.domain.models import Watch, WatchKind
@@ -166,8 +166,8 @@ async def update_watch(
         WatchPatch(
             enabled=request.enabled,
             interval_hours=request.interval_hours,
-            title=request.title,
-            config=request.config,
+            title=request.title if "title" in request.model_fields_set else UNSET,
+            config=request.config if "config" in request.model_fields_set else UNSET,
         ),
     )
     if watch is None:

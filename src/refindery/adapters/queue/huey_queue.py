@@ -20,7 +20,7 @@ import asyncio
 import logging
 import threading
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from huey import SqliteHuey
@@ -31,6 +31,7 @@ from refindery.adapters.observability.metrics import (
     job_failures_total,
     job_lease_timeouts_total,
 )
+from refindery.application.job_events import JobEvent, JobEventBus
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.config import JobsSettings
@@ -68,12 +69,14 @@ class HueyJobQueue:
         settings: JobsSettings,
         handlers: Mapping[JobKind, JobHandler],
         on_dead: DeadJobCallback | None = None,
+        events: JobEventBus | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._settings = settings
         self._handlers = dict(handlers)
         self._on_dead = on_dead
+        self._events = events
         self._loop: asyncio.AbstractEventLoop | None = None
         self._consumer: EmbeddedConsumer | None = None
         self._consumer_thread: threading.Thread | None = None
@@ -110,6 +113,7 @@ class HueyJobQueue:
                 "duplicate job for key %s; enqueue is a no-op", idempotency_key
             )
             return None
+        self._publish(job)
         await asyncio.to_thread(self._task, str(job.id))
         return job.id
 
@@ -118,6 +122,7 @@ class HueyJobQueue:
         job = await self._store.reset_job_for_retry(
             job_id=job_id, now=self._clock.now()
         )
+        self._publish(job)
         await asyncio.to_thread(self._task, str(job.id))
         return job.id
 
@@ -127,6 +132,8 @@ class HueyJobQueue:
         Runs before the consumer starts. Duplicate deliveries are harmless:
         execution re-checks ledger status and skips anything not runnable.
         """
+        # No events published here: recovery runs during lifespan startup,
+        # before any SSE subscriber can exist.
         now = self._clock.now()
         expired = await self._store.reset_expired_leases(now=now)
         pending = await self._store.list_pending_jobs()
@@ -226,6 +233,7 @@ class HueyJobQueue:
         await self._store.mark_job_running(
             job_id=job.id, lease_until=lease_until, now=now
         )
+        self._publish(job, status=JobStatus.RUNNING, updated_at=now)
         lease_timeout = asyncio.timeout(timeout_s)
         try:
             if (handler := self._handlers.get(job.kind)) is None:
@@ -255,17 +263,26 @@ class HueyJobQueue:
             # Outage deferral: a breaker-open fast-fail must not burn the
             # attempt budget; requeue after the provider's cooldown.
             logger.warning("job %s (%s) deferred: %s", job.id, job.kind, exc)
+            deferred_at = self._clock.now()
             await self._store.mark_job_failed(
                 job_id=job.id,
                 attempts=job.attempts,
                 last_error=str(exc),
-                now=self._clock.now(),
+                now=deferred_at,
+            )
+            self._publish(
+                job,
+                status=JobStatus.FAILED,
+                error=str(exc),
+                updated_at=deferred_at,
             )
             return max(self._settings.backoff_base_s, exc.retry_after_s)
         except Exception as exc:
             logger.exception("job %s (%s) failed", job.id, job.kind)
             return await self._record_failure(job, error=repr(exc))
-        await self._store.mark_job_done(job_id=job.id, now=self._clock.now())
+        done_at = self._clock.now()
+        await self._store.mark_job_done(job_id=job.id, now=done_at)
+        self._publish(job, status=JobStatus.DONE, updated_at=done_at)
         return None
 
     async def _record_failure(self, job: Job, *, error: str) -> float | None:
@@ -274,10 +291,46 @@ class HueyJobQueue:
         now = self._clock.now()
         if attempts >= job.max_attempts:
             await self._store.mark_job_dead(job_id=job.id, last_error=error, now=now)
+            self._publish(
+                job,
+                status=JobStatus.DEAD,
+                attempts=attempts,
+                error=error,
+                updated_at=now,
+            )
             if self._on_dead is not None:
                 await self._on_dead(job, error)
             return None
         await self._store.mark_job_failed(
             job_id=job.id, attempts=attempts, last_error=error, now=now
         )
+        self._publish(
+            job,
+            status=JobStatus.FAILED,
+            attempts=attempts,
+            error=error,
+            updated_at=now,
+        )
         return self._settings.backoff_base_s * (2.0**attempts)
+
+    def _publish(
+        self,
+        job: Job,
+        *,
+        status: JobStatus | None = None,
+        attempts: int | None = None,
+        error: str | None = None,
+        updated_at: datetime | None = None,
+    ) -> None:
+        """Publish a ledger transition; always called on the main loop."""
+        if self._events is None:
+            return
+        self._events.publish(
+            JobEvent.from_job(
+                job,
+                status=status,
+                attempts=attempts,
+                last_error=error,
+                updated_at=updated_at,
+            )
+        )

@@ -40,6 +40,12 @@ ATOM = b"""<?xml version="1.0" encoding="utf-8"?>
 </feed>
 """
 
+MALFORMED_LINK = b"""<rss><channel>
+  <item><link>http://[broken</link></item>
+  <item><link>https://example.com/good</link></item>
+</channel></rss>
+"""
+
 
 def test_rss2_items_parsed_with_titles_and_dates():
     items = parse_feed(raw=RSS2, base_url="https://blog.example/feed.xml")
@@ -72,6 +78,14 @@ def test_atom_entries_parse_and_invalid_scheme_dropped():
 def test_malformed_xml_yields_no_items():
     items = parse_feed(raw=b"this is not xml <<<", base_url="https://x.example/feed")
     assert items == []
+
+
+def test_malformed_link_is_dropped_without_hiding_valid_entries():
+    items = parse_feed(
+        raw=MALFORMED_LINK,
+        base_url="https://example.com/feed.xml",
+    )
+    assert [item.url for item in items] == ["https://example.com/good"]
 
 
 async def test_source_fetches_and_parses_via_fetcher():

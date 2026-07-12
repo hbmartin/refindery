@@ -1,15 +1,22 @@
 """WatchService: scheduling tick, poll fan-out, dedup, and failure isolation."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Never
 
 import pytest
 
 from refindery.application.ports.watch_source import WatchItem
+from refindery.application.services.ingest import IngestRequest
 from refindery.application.services.watch_service import WatchPatch, WatchService
 from refindery.config import WatchSettings
-from refindery.domain.errors import FetchFailedError, WatchNotFoundError
+from refindery.domain.errors import (
+    FetchFailedError,
+    WatchFanOutError,
+    WatchNotFoundError,
+)
 from refindery.domain.ids import WatchId, new_blacklist_id
 from refindery.domain.models import (
+    MAX_WATCH_INTERVAL_HOURS,
     BlacklistKind,
     BlacklistRule,
     JobKind,
@@ -240,6 +247,29 @@ async def test_discover_error_records_error_and_isolates_siblings(harness):
     assert good_refreshed.last_status is WatchStatus.OK
 
 
+async def test_total_fan_out_failure_records_error_and_retries(harness, monkeypatch):
+    container, _clock, source = harness
+    source.items[FEED_URL] = _items("https://blog.example/posts/a")
+    watch = await container.watches.create(kind=WatchKind.RSS, url=FEED_URL)
+    assert watch is not None
+    await container.watches.tick()
+    (job,) = await _poll_jobs(container)
+
+    async def fail_ingest(_request: IngestRequest) -> Never:
+        raise RuntimeError
+
+    monkeypatch.setattr(container.ingest, "ingest", fail_ingest)
+    with pytest.raises(WatchFanOutError, match="failed to ingest all 1"):
+        await container.watches.handle_poll_watch(job)
+
+    refreshed = await container.watches.get(watch.id)
+    assert refreshed is not None
+    assert refreshed.last_status is WatchStatus.ERROR
+    assert refreshed.last_error is not None
+    assert "failed to ingest all 1" in refreshed.last_error
+    assert refreshed.last_item_count is None
+
+
 async def test_update_reschedules_on_interval_change(harness):
     container, _clock, _source = harness
     watch = await container.watches.create(kind=WatchKind.RSS, url=FEED_URL)
@@ -264,3 +294,8 @@ async def test_run_now_enqueues_manual_job_and_advances(harness):
     assert refreshed.next_run_at == NOW + timedelta(hours=24)
     with pytest.raises(WatchNotFoundError):
         await container.watches.run_now(WatchId("missing"))
+
+
+def test_watch_settings_reject_unsafe_default_interval():
+    with pytest.raises(ValueError):
+        WatchSettings(default_interval_hours=MAX_WATCH_INTERVAL_HOURS + 1)

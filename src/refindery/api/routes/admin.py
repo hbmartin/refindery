@@ -15,18 +15,20 @@ from pydantic import BaseModel, Field, SecretStr
 from refindery.adapters.observability.metrics_history import (
     DuckDbMetricsReader,
     MetricSeries,
+    current_counters,
     current_gauges,
 )
 from refindery.adapters.observability.query_log_reader import (
     DetailedLoggedRun,
     DuckDbQueryLogReader,
+    LatencyQuantiles,
 )
 from refindery.api.auth import Principal, require_read, require_write
 from refindery.api.deps import get_container
 from refindery.application.container import Container
 from refindery.application.services.eval_service import EvalService, ScoreReport
 from refindery.domain.ids import JobId
-from refindery.domain.models import JobKind, JobStatus
+from refindery.domain.models import JobKind, JobStatus, TombstoneStatus
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 identity_router = APIRouter(prefix="/v1", tags=["auth"])
@@ -123,6 +125,42 @@ class AdminConfigResponse(BaseModel):
     mutability: dict[str, Literal["boot_only"]]
 
 
+class TombstoneBacklogSummary(BaseModel):
+    pending: int
+    deleted: int
+    verified: int
+
+
+class JobsSummary(BaseModel):
+    by_status: dict[JobStatus, int]
+    queue_depth: int
+    dead: int
+    failures_by_kind: dict[str, int]
+
+
+class SearchLatencySummary(BaseModel):
+    since: datetime | None
+    runs: int
+    p50_ms: float
+    p95_ms: float
+
+
+class BreakerStateSummary(BaseModel):
+    name: str
+    state: Literal["closed", "half_open", "open"]
+
+
+class MetricsSummaryResponse(BaseModel):
+    generated_at: datetime
+    tombstones: TombstoneBacklogSummary
+    jobs: JobsSummary
+    query_log_dropped_rows: int
+    embedding_errors_by_provider: dict[str, int]
+    rerank_degraded_total: int
+    search_latency: SearchLatencySummary | None
+    breakers: list[BreakerStateSummary]
+
+
 class McpToolResponse(BaseModel):
     name: str
     description: str | None = None
@@ -176,6 +214,92 @@ async def metrics_timeseries(
         metric=metric,
         series=[_series_response(item) for item in series],
         current=[_series_response(item) for item in current_gauges(metric)],
+    )
+
+
+_BREAKER_STATES: dict[float, Literal["closed", "half_open", "open"]] = {
+    0.0: "closed",
+    1.0: "half_open",
+    2.0: "open",
+}
+
+
+def _counter_by_label(metric: str, label: str) -> dict[str, int]:
+    return {
+        series.labels[label]: int(series.points[0].value)
+        for series in current_counters(metric)
+        if label in series.labels
+    }
+
+
+def _counter_total(metric: str) -> int:
+    return int(sum(series.points[0].value for series in current_counters(metric)))
+
+
+def _latency_summary(
+    container: Container, since: datetime | None
+) -> SearchLatencySummary | None:
+    try:
+        reader = DuckDbQueryLogReader(container.settings.duckdb.path)
+    except FileNotFoundError:
+        return None
+    quantiles: LatencyQuantiles | None = reader.read_latency_quantiles(since=since)
+    if quantiles is None:
+        return None
+    return SearchLatencySummary(
+        since=since,
+        runs=quantiles.runs,
+        p50_ms=quantiles.p50_ms,
+        p95_ms=quantiles.p95_ms,
+    )
+
+
+@router.get(
+    "/metrics/summary",
+    operation_id="admin_metrics_summary",
+    summary="Typed operational canaries",
+    description=(
+        "One JSON snapshot of operational health: job-ledger counts, vector "
+        "tombstone backlog, dropped observability rows, provider error "
+        "counters, search latency quantiles, and circuit breaker states. "
+        "Counter-derived fields are process-lifetime totals that reset on "
+        "restart; `since` bounds the latency window only."
+    ),
+)
+async def metrics_summary(
+    container: Annotated[Container, Depends(get_container)],
+    since: datetime | None = None,
+) -> MetricsSummaryResponse:
+    """Aggregate typed canaries the UI would otherwise parse from /metrics."""
+    job_counts = await container.store.count_jobs_by_status()
+    tombstone_counts = await container.store.count_tombstones_by_status()
+    latency = await asyncio.to_thread(_latency_summary, container, since)
+    return MetricsSummaryResponse(
+        generated_at=container.clock.now(),
+        tombstones=TombstoneBacklogSummary(
+            pending=tombstone_counts.get(TombstoneStatus.PENDING, 0),
+            deleted=tombstone_counts.get(TombstoneStatus.DELETED, 0),
+            verified=tombstone_counts.get(TombstoneStatus.VERIFIED, 0),
+        ),
+        jobs=JobsSummary(
+            by_status={status: job_counts.get(status, 0) for status in JobStatus},
+            queue_depth=job_counts.get(JobStatus.PENDING, 0),
+            dead=job_counts.get(JobStatus.DEAD, 0),
+            failures_by_kind=_counter_by_label("refindery_job_failures", "kind"),
+        ),
+        query_log_dropped_rows=container.sink.dropped,
+        embedding_errors_by_provider=_counter_by_label(
+            "refindery_embedding_api_errors", "provider"
+        ),
+        rerank_degraded_total=_counter_total("refindery_rerank_degraded"),
+        search_latency=latency,
+        breakers=[
+            BreakerStateSummary(
+                name=series.labels.get("name", series.sample),
+                state=_BREAKER_STATES.get(series.points[0].value, "closed"),
+            )
+            for series in current_gauges("refindery_circuit_breaker_state")
+        ],
     )
 
 

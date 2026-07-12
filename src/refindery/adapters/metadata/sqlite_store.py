@@ -1545,6 +1545,22 @@ class SqliteMetadataStore(_EntityClusterMixin):
         rows = await cursor.fetchall()
         return [_job_from_row(row) for row in rows]
 
+    async def count_jobs_by_status(self) -> dict[JobStatus, int]:
+        """Job counts grouped by ledger status (absent statuses omitted)."""
+        cursor = await self.conn.execute(
+            "SELECT status, COUNT(*) AS n FROM jobs GROUP BY status"
+        )
+        rows = await cursor.fetchall()
+        return {JobStatus(row["status"]): row["n"] for row in rows}
+
+    async def count_tombstones_by_status(self) -> dict[TombstoneStatus, int]:
+        """Vector tombstone counts grouped by status (absent statuses omitted)."""
+        cursor = await self.conn.execute(
+            "SELECT status, COUNT(*) AS n FROM vector_tombstones GROUP BY status"
+        )
+        rows = await cursor.fetchall()
+        return {TombstoneStatus(row["status"]): row["n"] for row in rows}
+
     # -- watches ---------------------------------------------------------------
 
     async def create_watch(self, watch: Watch) -> bool:

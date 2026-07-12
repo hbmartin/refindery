@@ -75,6 +75,17 @@ class WatchSourceUnavailableError(RefinderyError):
         super().__init__(f"no source available for watch kind {kind!r}")
 
 
+class WatchFanOutError(RefinderyError):
+    """None of a watch poll's discovered items could be ingested."""
+
+    def __init__(self, *, watch_id: str, item_count: int) -> None:
+        self.watch_id = watch_id
+        self.item_count = item_count
+        super().__init__(
+            f"watch {watch_id!r} failed to ingest all {item_count} discovered items"
+        )
+
+
 class ModelNotFoundError(RefinderyError):
     """No embedding model with the given id is registered."""
 

@@ -18,6 +18,8 @@ from refindery.domain.ids import (
     WatchId,
 )
 
+MAX_WATCH_INTERVAL_HOURS = 8_760
+
 
 class PageStatus(StrEnum):
     """Lifecycle of a page through the indexing pipeline."""

@@ -22,7 +22,7 @@ from refindery.adapters.feeds.rss_feedparser import RssWatchSource
 from refindery.adapters.llm.openai_compat import OpenAiCompatClient
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
-from refindery.adapters.observability.metrics import jobs_lease_expired
+from refindery.adapters.observability.metrics import jobs_lease_expired, queue_depth
 from refindery.adapters.observability.metrics_history import MetricsSnapshotter
 from refindery.adapters.observability.query_log import DuckDbQueryLog
 from refindery.adapters.queue.huey_queue import HueyJobQueue
@@ -34,6 +34,7 @@ from refindery.adapters.youtube.caption_fetcher import YoutubeCaptionFetcher
 from refindery.adapters.youtube.extractor import YoutubeTranscriptExtractor
 from refindery.adapters.youtube.transcriber import build_transcriber
 from refindery.adapters.youtube.watch_source import YoutubeWatchSource
+from refindery.application.job_events import JobEventBus
 from refindery.application.ports.chunker import Chunker
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.content_extractor import ContentExtractor, Fetcher
@@ -63,7 +64,13 @@ from refindery.application.services.watch_service import WatchService
 from refindery.config import RerankerKind, Settings, VectorStoreKind
 from refindery.domain.canonical_url import CanonicalizationRules
 from refindery.domain.errors import ConfigurationError, ExtractionUnavailableError
-from refindery.domain.models import EmbeddingModel, JobKind, ModelStatus, WatchKind
+from refindery.domain.models import (
+    EmbeddingModel,
+    JobKind,
+    JobStatus,
+    ModelStatus,
+    WatchKind,
+)
 
 if TYPE_CHECKING:
     from refindery.adapters.embedding.surface_forms import Model2VecSurfaceEmbedder
@@ -102,6 +109,7 @@ class Container:
     metrics_snapshotter: MetricsSnapshotter
     admin_eval: AdminEvalService
     watches: WatchService
+    events: JobEventBus
     reranker: Reranker | None = None
 
     async def startup(self) -> None:
@@ -150,6 +158,8 @@ class Container:
     async def shutdown(self) -> None:
         """Attempt every cleanup step and log individual failures."""
         steps = (
+            # Events close first so SSE streams end before the queue stops.
+            ("events", self.events.close),
             ("queue", self.queue.stop),
             ("metrics_snapshotter", self.metrics_snapshotter.stop),
             ("entity_ingest", self.entity_ingest.close),
@@ -327,6 +337,8 @@ def _register_lease_watchdog(
         # startup recover() remains the only re-enqueue path.
         expired = await store.list_expired_running_jobs(now=clock.now())
         jobs_lease_expired.set(len(expired))
+        counts = await store.count_jobs_by_status()
+        queue_depth.set(counts.get(JobStatus.PENDING, 0))
         for job in expired:
             logger.warning(
                 "job %s (%s) is RUNNING past its lease (%s)",
@@ -527,6 +539,10 @@ def build_container(settings: Settings) -> Container:
         router=router,
         pooling=settings.indexing.page_vector_pooling,
     )
+    events = JobEventBus(
+        queue_size=settings.events.queue_size,
+        max_subscribers=settings.events.max_subscribers,
+    )
     queue = HueyJobQueue(
         path=settings.huey.path,
         store=store,
@@ -537,6 +553,7 @@ def build_container(settings: Settings) -> Container:
             JobKind.FETCH_AND_INDEX: indexing.handle_fetch_and_index,
         },
         on_dead=indexing.mark_page_dead,
+        events=events,
     )
     indexing.set_queue(queue)
     ingest = IngestService(
@@ -697,5 +714,6 @@ def build_container(settings: Settings) -> Container:
         metrics_snapshotter=metrics_snapshotter,
         admin_eval=admin_eval,
         watches=watches,
+        events=events,
         reranker=reranker,
     )

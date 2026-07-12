@@ -71,6 +71,7 @@ async def test_read_token_can_record_feedback(client):
         ),
         ("POST", "/v1/clusters/recompute", None),
         ("POST", "/v1/jobs/some-job/retry", None),
+        ("POST", "/v1/jobs/retry", {}),
         ("DELETE", "/v1/blacklist/some-id", None),
         ("POST", "/v1/watches", {"url": "https://blog.example/feed.xml"}),
         ("PATCH", "/v1/watches/some-id", {"enabled": False}),

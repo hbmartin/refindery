@@ -16,7 +16,9 @@ from pydantic import (
 
 from refindery.application.services.similarity_service import Mediation
 from refindery.domain.models import (
+    MAX_WATCH_INTERVAL_HOURS,
     BlacklistKind,
+    JobKind,
     JobStatus,
     PageStatus,
     WatchKind,
@@ -235,6 +237,62 @@ class JobListResponse(BaseModel):
     jobs: list[JobResponse]
 
 
+class JobRetryBatchRequest(BaseModel):
+    """POST /v1/jobs/retry body: explicit ids or a dead-job selector."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["dead"] = "dead"
+    job_ids: list[str] | None = Field(default=None, min_length=1, max_length=500)
+    kind: JobKind | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def _ids_xor_kind(self) -> Self:
+        if self.job_ids is not None and self.kind is not None:
+            msg = "job_ids and kind are mutually exclusive"
+            raise ValueError(msg)
+        return self
+
+
+class JobRetryBatchRetriedResult(JobResponse):
+    """A job that was reset to pending and re-enqueued."""
+
+    outcome: Literal["retried"] = "retried"
+
+
+class JobRetryBatchSkippedResult(BaseModel):
+    """A job skipped because it is not dead."""
+
+    job_id: str
+    status: JobStatus
+    outcome: Literal["skipped"] = "skipped"
+    detail: str
+
+
+class JobRetryBatchMissingResult(BaseModel):
+    """An unknown job id."""
+
+    job_id: str
+    outcome: Literal["not_found"] = "not_found"
+
+
+JobRetryBatchResult = Annotated[
+    JobRetryBatchRetriedResult
+    | JobRetryBatchSkippedResult
+    | JobRetryBatchMissingResult,
+    Field(discriminator="outcome"),
+]
+
+
+class JobRetryBatchResponse(BaseModel):
+    """POST /v1/jobs/retry response in input/selection order."""
+
+    requested: int
+    retried: int
+    results: list[JobRetryBatchResult]
+
+
 class SearchFiltersBody(BaseModel):
     """First-class search filters."""
 
@@ -258,12 +316,11 @@ class SearchFiltersBody(BaseModel):
         return self
 
 
-class SearchRequest(BaseModel):
-    """POST /v1/search body."""
+class SearchParams(BaseModel):
+    """Shared search knobs (everything except the query text)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    query: str = Field(min_length=1, max_length=4_000)
     k: int = Field(default=10, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
     candidates: int = Field(default=100, ge=1, le=1_000)
@@ -285,6 +342,20 @@ class SearchRequest(BaseModel):
             msg = "candidates must be >= offset + k"
             raise ValueError(msg)
         return self
+
+
+class SearchRequest(SearchParams):
+    """POST /v1/search body."""
+
+    query: str = Field(min_length=1, max_length=4_000)
+
+
+class SearchBatchRequest(SearchParams):
+    """POST /v1/search/batch body: shared params + up to 20 query strings."""
+
+    queries: list[Annotated[str, Field(min_length=1, max_length=4_000)]] = Field(
+        min_length=1, max_length=20
+    )
 
 
 class ClusterRef(BaseModel):
@@ -335,6 +406,36 @@ class SearchResponse(BaseModel):
     has_more: bool
     suggestions: list[Suggestion]
     timing_ms: dict[str, float]
+
+
+class SearchBatchOkResult(SearchResponse):
+    """One successful batch query with its full search response."""
+
+    index: int
+    query: str
+    outcome: Literal["ok"] = "ok"
+
+
+class SearchBatchErrorResult(BaseModel):
+    """One batch query that failed with a per-item (non-fatal) error."""
+
+    index: int
+    query: str
+    outcome: Literal["error"] = "error"
+    error: Literal["feature_unavailable", "no_active_model"]
+    detail: str
+
+
+SearchBatchResult = Annotated[
+    SearchBatchOkResult | SearchBatchErrorResult,
+    Field(discriminator="outcome"),
+]
+
+
+class SearchBatchResponse(BaseModel):
+    """POST /v1/search/batch response in input order."""
+
+    results: list[SearchBatchResult]
 
 
 class SimilarResult(BaseModel):
@@ -655,7 +756,7 @@ class CreateWatchRequest(BaseModel):
     url: str
     kind: WatchKind = WatchKind.RSS
     title: str | None = None
-    interval_hours: int | None = Field(default=None, ge=1)
+    interval_hours: int | None = Field(default=None, ge=1, le=MAX_WATCH_INTERVAL_HOURS)
     enabled: bool = True
     config: dict[str, str] | None = None
 
@@ -679,7 +780,7 @@ class UpdateWatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool | None = None
-    interval_hours: int | None = Field(default=None, ge=1)
+    interval_hours: int | None = Field(default=None, ge=1, le=MAX_WATCH_INTERVAL_HOURS)
     title: str | None = None
     config: dict[str, str] | None = None
 

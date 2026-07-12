@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from refindery.domain.canonical_url import DEFAULT_TRACKING_PARAMS
+from refindery.domain.models import MAX_WATCH_INTERVAL_HOURS
 from refindery.domain.rollup import PoolingStrategy
 
 
@@ -184,7 +185,7 @@ class WatchSettings(BaseModel):
     periodic (tests drive ``WatchService.tick`` directly instead).
     """
 
-    default_interval_hours: int = Field(default=24, ge=1)
+    default_interval_hours: int = Field(default=24, ge=1, le=MAX_WATCH_INTERVAL_HOURS)
     poll_tick_enabled: bool = True
     max_due_per_tick: int = Field(default=20, ge=1)
     max_items_per_poll: int = Field(default=200, ge=1)
@@ -221,6 +222,14 @@ class McpSettings(BaseModel):
     """MCP server surface configuration."""
 
     enable_mutating_tools: bool = False
+
+
+class EventsSettings(BaseModel):
+    """Server-sent events (GET /v1/events) configuration."""
+
+    heartbeat_s: float = Field(default=15.0, gt=0)
+    queue_size: int = Field(default=256, ge=1)
+    max_subscribers: int = Field(default=16, ge=1)
 
 
 class EntitySettings(BaseModel):
@@ -316,6 +325,7 @@ class Settings(BaseSettings):
     jobs: JobsSettings = JobsSettings()
     resilience: ResilienceSettings = ResilienceSettings()
     mcp: McpSettings = McpSettings()
+    events: EventsSettings = EventsSettings()
     entity: EntitySettings = EntitySettings()
     search: SearchSettings = SearchSettings()
     cluster: ClusterSettings = ClusterSettings()

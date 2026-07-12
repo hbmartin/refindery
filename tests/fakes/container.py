@@ -14,6 +14,7 @@ from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.vector.lancedb_store import LanceDbVectorStore
 from refindery.adapters.youtube.extractor import YoutubeTranscriptExtractor
 from refindery.application.container import Container
+from refindery.application.job_events import JobEventBus
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.cluster_engine import (
     ClusterFitResult,
@@ -148,6 +149,10 @@ def build_test_container(
         fetcher=the_fetcher,
         router=router,
     )
+    events = JobEventBus(
+        queue_size=settings.events.queue_size,
+        max_subscribers=settings.events.max_subscribers,
+    )
     queue = HueyJobQueue(
         path=settings.huey.path,
         store=store,
@@ -158,6 +163,7 @@ def build_test_container(
             JobKind.FETCH_AND_INDEX: indexing.handle_fetch_and_index,
         },
         on_dead=indexing.mark_page_dead,
+        events=events,
     )
     indexing.set_queue(queue)
     ingest = IngestService(store=store, queue=queue, clock=clock, router=router)
@@ -269,5 +275,6 @@ def build_test_container(
         metrics_snapshotter=metrics_snapshotter,
         admin_eval=admin_eval,
         watches=watches,
+        events=events,
         reranker=reranker,
     )

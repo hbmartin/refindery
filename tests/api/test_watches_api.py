@@ -7,6 +7,7 @@ import pytest
 
 from refindery.api.app import create_app
 from refindery.application.ports.content_extractor import FetchResult
+from refindery.domain.models import MAX_WATCH_INTERVAL_HOURS
 from tests.fakes.container import TEST_TOKEN, build_test_container, make_test_settings
 from tests.fakes.extraction import FakeFetcher
 
@@ -124,6 +125,45 @@ async def test_patch_updates_enabled_and_interval(harness):
         "/v1/watches/nope", json={"enabled": True}, headers=AUTH
     )
     assert missing.status_code == 404
+
+
+async def test_patch_distinguishes_omitted_fields_from_explicit_null(harness):
+    client, _container = harness
+    created = await client.post(
+        "/v1/watches",
+        json={"url": FEED_URL, "title": "Example", "config": {"x": "y"}},
+        headers=AUTH,
+    )
+    watch_id = created.json()["id"]
+
+    unchanged = await client.patch(f"/v1/watches/{watch_id}", json={}, headers=AUTH)
+    assert unchanged.status_code == 200
+    assert unchanged.json()["title"] == "Example"
+    assert unchanged.json()["config"] == {"x": "y"}
+
+    cleared = await client.patch(
+        f"/v1/watches/{watch_id}",
+        json={"title": None, "config": None},
+        headers=AUTH,
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["title"] is None
+    assert cleared.json()["config"] is None
+
+
+async def test_watch_interval_rejects_values_above_safe_bound(harness):
+    client, _container = harness
+    payload = {"interval_hours": MAX_WATCH_INTERVAL_HOURS + 1}
+    created_with_unsafe_interval = await client.post(
+        "/v1/watches", json={"url": FEED_URL, **payload}, headers=AUTH
+    )
+    assert created_with_unsafe_interval.status_code == 422
+
+    created = await client.post("/v1/watches", json={"url": FEED_URL}, headers=AUTH)
+    patched_with_unsafe_interval = await client.patch(
+        f"/v1/watches/{created.json()['id']}", json=payload, headers=AUTH
+    )
+    assert patched_with_unsafe_interval.status_code == 422
 
 
 async def test_patch_rejects_url_change(harness):

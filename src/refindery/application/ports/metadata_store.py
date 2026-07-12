@@ -243,6 +243,14 @@ class MetadataStore(Protocol):
         """Return running jobs whose lease expired (read-only; watchdog telemetry)."""
         ...
 
+    async def count_jobs_by_status(self) -> dict[JobStatus, int]:
+        """Job counts grouped by ledger status (absent statuses omitted)."""
+        ...
+
+    async def count_tombstones_by_status(self) -> dict[TombstoneStatus, int]:
+        """Vector tombstone counts grouped by status (absent statuses omitted)."""
+        ...
+
     # -- watches ---------------------------------------------------------------
 
     async def create_watch(self, watch: Watch) -> bool:

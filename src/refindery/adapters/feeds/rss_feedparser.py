@@ -43,7 +43,7 @@ def parse_feed(*, raw: bytes, base_url: str) -> list[WatchItem]:
                 title=title if isinstance(title, str) and title else None,
                 published_at=_entry_published(entry),
             )
-        except ValidationError:
+        except (ValidationError, ValueError):
             logger.warning("dropping invalid feed entry %r from %s", link, base_url)
             continue
         items.append(item)

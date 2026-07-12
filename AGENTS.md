@@ -101,3 +101,9 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
   user, create them under `umask 077`, and keep the scrape credentials path aligned.
 - Escape Markdown table delimiters inside structural renderers such as schema-type
   unions; escaping only prose cells does not protect generated type columns.
+- Bound persisted scheduling intervals at every external configuration boundary;
+  values that fit SQLite integers can still overflow Python datetime arithmetic
+  and leave due rows permanently consuming scheduler capacity.
+- Preserve omitted-versus-null PATCH semantics with an explicit unset sentinel for
+  nullable fields, and fail a durable fan-out job when every child operation fails
+  so the queue can retry instead of recording a false success.

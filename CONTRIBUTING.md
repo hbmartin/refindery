@@ -31,15 +31,24 @@ uv run pyrefly check src tests
 uv run pytest
 ```
 
-Tests that need a running Qdrant are marked `qdrant` and are skipped unless
-`QDRANT_URL` is set (or Docker + testcontainers is available):
+Tests that need Qdrant are marked `qdrant`. The conformance suite resolves
+its Qdrant in priority order: an explicit `QDRANT_URL` (a server URL, or
+`":memory:"` for qdrant-client's daemon-free in-process mode) wins; with no
+URL set, a testcontainer is started automatically when Docker is available
+(pinned to the compose/CI image; the first run pulls it); otherwise the
+`qdrant` tests skip with the reason.
 
 ```bash
-docker compose up -d qdrant
-QDRANT_URL=http://localhost:6333 uv run pytest
-# or, without Docker:
-uv run pytest -m "not qdrant"
+make test-qdrant          # compose up qdrant, wait for /readyz, run the suite
+make test-qdrant-local    # daemon-free smoke via QDRANT_URL=":memory:"
+make qdrant-down          # stop the compose qdrant again
+uv run pytest             # with Docker running, qdrant tests use a testcontainer
+uv run pytest -m "not qdrant"   # skip them entirely
 ```
+
+The in-process `":memory:"` mode is a smoke layer — payload indexes are
+no-ops there — so the real server (the CI service container) remains the
+conformance source of truth.
 
 Slow tests (local model downloads, UMAP JIT warmup) are marked `slow`; use
 `uv run pytest -m "not slow"` for a fast loop.

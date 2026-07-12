@@ -26,14 +26,19 @@ uv run lizard src -C 15
 uv run zensical build --clean --strict
 ```
 
-Tests needing a running Qdrant are marked `qdrant` and skipped unless
-`QDRANT_URL` is set (or Docker + testcontainers is available). Slow tests (model
-downloads, UMAP JIT warmup) are marked `slow`:
+Tests needing Qdrant are marked `qdrant`. The conformance suite resolves its
+Qdrant in priority order: an explicit `QDRANT_URL` (a server URL, or
+`":memory:"` for qdrant-client's daemon-free in-process mode) wins; with no
+URL set, a testcontainer starts automatically when Docker is available
+(pinned to the compose/CI image; the first run pulls it); otherwise the
+`qdrant` tests skip with the reason. Slow tests (model downloads, UMAP JIT
+warmup) are marked `slow`:
 
 ```bash
-uv run pytest -m "not qdrant"          # fast, no Docker
+make test-qdrant                       # compose qdrant + the conformance suite
+make test-qdrant-local                 # daemon-free smoke (QDRANT_URL=":memory:")
+uv run pytest -m "not qdrant"          # skip qdrant tests entirely
 uv run pytest -m "not slow"            # skip slow tests
-docker compose up -d qdrant && QDRANT_URL=http://localhost:6333 uv run pytest
 ```
 
 Code-complexity is gated by `lizard` in CI (CCN > 15 on `src` fails).

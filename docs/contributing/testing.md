@@ -33,8 +33,11 @@ production.
 
 Both vector-store adapters must pass the same conformance suite. When you touch
 either adapter — or the `VectorStore` [port](../reference/python-api/ports.md) —
-run the conformance tests against both (Qdrant needs a running instance; see
-[Contributing](index.md#running-checks)).
+run the conformance tests against both. The qdrant param resolves its target in
+priority order: `QDRANT_URL` (a server URL or `":memory:"` for the in-process
+local mode) → an automatic testcontainer when Docker is available (pinned to
+the compose/CI image) → skip. `make test-qdrant` and `make test-qdrant-local`
+wrap the two common runs; see [Contributing](index.md#running-checks).
 
 ## Notes for adapter work
 

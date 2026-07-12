@@ -39,6 +39,11 @@ local mode) → an automatic testcontainer when Docker is available (pinned to
 the compose/CI image) → skip. `make test-qdrant` and `make test-qdrant-local`
 wrap the two common runs; see [Contributing](index.md#running-checks).
 
+The suite asserts rank-level behavior and the per-store fusion identity, never
+sparse-score equality across backends: Qdrant's fastembed BM25 and LanceDB's
+Lance-native FTS tokenize differently (stemming, stop words, positions), so
+the same query legitimately returns different sparse hits per backend.
+
 ## Notes for adapter work
 
 - `DuckDbSink` executes registered DDL at `start()` — construct

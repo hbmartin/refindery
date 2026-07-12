@@ -18,6 +18,7 @@ from refindery.domain.canonical_url import CanonicalizationRules, canonicalize
 from refindery.domain.content_hash import content_hash
 from refindery.domain.errors import BodyConflictError
 from refindery.domain.ids import new_page_id
+from refindery.domain.job_keys import fetch_and_index_key, index_page_key
 from refindery.domain.models import (
     IngestBlacklisted,
     IngestOutcome,
@@ -92,6 +93,7 @@ class IngestService:
             )
 
         body_text = await self._resolve_body(request)
+        body_hash = None if body_text is None else content_hash(body_text)
         now = self._clock.now()
         page = Page(
             id=new_page_id(),
@@ -100,7 +102,7 @@ class IngestService:
             domain=canonical.domain,
             title=request.title,
             body_text=body_text,
-            content_hash=None if body_text is None else content_hash(body_text),
+            content_hash=body_hash,
             source=request.source,
             metadata=None if request.metadata is None else dict(request.metadata),
             first_seen_at=request.fetched_at or now,
@@ -111,20 +113,20 @@ class IngestService:
         )
         await self._store.insert_page(page)
 
-        if body_text is None:
+        if body_hash is None:
             payload: dict[str, str] = {"page_id": page.id}
             if request.fetch_route is not FetchRoute.AUTO:
                 payload["fetch_route"] = request.fetch_route.value
             await self._queue.enqueue(
                 kind=JobKind.FETCH_AND_INDEX,
                 payload=payload,
-                idempotency_key=f"fetch:{page.id}",
+                idempotency_key=fetch_and_index_key(page.id),
             )
         else:
             await self._queue.enqueue(
                 kind=JobKind.INDEX_PAGE,
                 payload={"page_id": page.id},
-                idempotency_key=f"index:{page.id}:{page.content_hash}",
+                idempotency_key=index_page_key(page_id=page.id, content_hash=body_hash),
             )
         return IngestQueued(page_id=page.id)
 

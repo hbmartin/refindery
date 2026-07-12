@@ -50,7 +50,8 @@ services:
       - /bin/sh
       - -c
       - >
-        printf '%s' "$${REFINDERY_AUTH_TOKEN}" > /etc/prometheus/token &&
+        (umask 077 &&
+        printf '%s' "$${REFINDERY_AUTH_TOKEN}" > /tmp/refindery-prometheus-token) &&
         exec /bin/prometheus
         --config.file=/etc/prometheus/prometheus.yml
         --storage.tsdb.path=/prometheus

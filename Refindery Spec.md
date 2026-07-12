@@ -242,7 +242,7 @@ CREATE TABLE blacklist (
 -- TODO: consider whether this is really necessary if we're using huey
 CREATE TABLE jobs (
   id            TEXT PRIMARY KEY,
-  kind          TEXT NOT NULL,               -- index_page|backfill_model|cluster|canonicalize_entities|purge
+  kind          TEXT NOT NULL,               -- index_page|fetch_and_index|extract_entities|backfill_model|cluster|canonicalize_entities|purge_vectors
   payload       TEXT NOT NULL,               -- JSON
   status        TEXT NOT NULL,               -- pending|running|done|failed|dead
   attempts      INTEGER NOT NULL DEFAULT 0,
@@ -279,7 +279,7 @@ Authorization: Bearer <token>
 
 → 202 { "page_id": "...", "status": "queued" }
 → 200 { "page_id": "...", "status": "indexed", "revisit": true }   // known canonical_url
-→ 403 { "error": "blacklisted", "pattern": "*.bank.com" }
+→ 403 { "error": "blacklisted", "pattern": "bank.com" }
 ```
 
 There is **one ingest endpoint**. Manual adds go through it. The caller always supplies body text.
@@ -315,13 +315,13 @@ Artchitecture shoud support both recapture and collapsing for v2.
    1. Use a wrapper library e.g. https://github.com/feyninc/catsu so we can easily support any of e..g. Voyage 4/3.5, OpenAI `text-embedding-3-small/large`, Cohere Embed
 
 3. **Roll up** — `page_vector = normalize(mean(chunk_vectors))` per model. *Tradeoff: mean-pooling washes out topically heterogeneous long pages. Accepted for v1; max-pool variant is a config flag.*
-4. **Extract entities** — full body. LLM (preferred) or GLiNER / spaCy / gazetteer.
-5. **Canonicalize entities** — incremental (§7).
-6. `status ← indexed`, mark clusters stale.
+4. `status ← indexed`, then enqueue `extract_entities` keyed by `(page_id, content_hash)`.
+5. **Extract entities** — full body. LLM (preferred) or GLiNER / spaCy / gazetteer. This is a durable enrichment job.
+6. **Canonicalize entities** — incremental (§7). Entity job failure is visible in `/v1/jobs`, logs, and `/v1/pages/{id}/status` feature warnings but does not change page retrieval status.
 
 **Idempotency.** Job key = `(page_id, content_hash)`. Re-enqueue is a no-op.
 
-**Failure.** Exponential backoff, 5 attempts, then `status ← dead` with `last_error`. Dead jobs are queryable and manually re-enqueueable. Page stays `failed` and is excluded from search.
+**Failure.** Core indexing failures best-effort delete chunks, page vectors, and vector-store points; then the page is `failed` and, after exhausted attempts, `dead`. Dead jobs are queryable and manually re-enqueueable. Search, exact matches, suggestions, and similarity only use `indexed` pages.
 
 **Recovery.** On startup, `running` jobs past `lease_until` reset to `pending`.
 
@@ -421,7 +421,7 @@ Runs the full pipeline once per model. The sparse arm and the reranker are **ide
 
 ## 7. Entities
 
-**Extraction.**  Primary chain: GLiNER → spaCy NER → gazetteer. Selected by config. User configurable: LLM with structured JSON output, fixed type taxonomy (`person, org, product, technology, concept, place, work`), with character offsets.
+**Extraction.**  Primary chain: GLiNER → spaCy NER → gazetteer. Selected by config. Startup fails if the configured chain has no healthy extractor; the default quickstart installs the `ner` extra. User configurable: LLM with structured JSON output, fixed type taxonomy (`person, org, product, technology, concept, place, work`), with character offsets.
 
 **`gliner-spacy`**, wraps the GLiNER zero-shot NER model as a spaCy pipeline component and can be combined with spaCy’s built-in gazetteer-style tools (like the `EntityRuler`). This combination gives the best of both worlds: GLiNER's zero-shot transformer capabilities for dynamic entity recognition, and a strict dictionary-based gazetteer for absolute precision on known terms.
 
@@ -514,7 +514,7 @@ Bearer token **always required**, even on loopback. Bound to `127.0.0.1` by defa
 ```
 POST   /v1/pages                      ingest (single endpoint, body_extracted XOR body_html)
 GET    /v1/pages/{id}                 full body_text + metadata
-GET    /v1/pages/{id}/status          queued|indexing|indexed|failed|dead
+GET    /v1/pages/{id}/status          queued|indexing|indexed|failed|dead + features.entities
 GET    /v1/pages/{id}/similar         ?mediation=vector|cluster|entity&k=
 GET    /v1/pages/{id}/entities
 POST   /v1/search

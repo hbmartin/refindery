@@ -21,7 +21,8 @@ from refindery.application.ports.watch_source import WatchItem
 logger = logging.getLogger(__name__)
 
 
-def _entry_published(entry: feedparser.FeedParserDict) -> datetime | None:
+def entry_published(entry: feedparser.FeedParserDict) -> datetime | None:
+    """Entry publish/update time as a UTC datetime, or None when unusable."""
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if not isinstance(parsed, struct_time):
         return None
@@ -44,7 +45,7 @@ def parse_feed(*, raw: bytes, base_url: str) -> list[WatchItem]:
             item = WatchItem(
                 url=urljoin(base_url, link),
                 title=title if isinstance(title, str) and title else None,
-                published_at=_entry_published(entry),
+                published_at=entry_published(entry),
             )
         except (ValidationError, ValueError):
             logger.warning("dropping invalid feed entry %r from %s", link, base_url)

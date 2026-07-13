@@ -11,6 +11,7 @@ from refindery.adapters.observability.duckdb_sink import DuckDbSink
 from refindery.adapters.observability.metrics_history import MetricsSnapshotter
 from refindery.adapters.observability.query_log import DuckDbQueryLog
 from refindery.adapters.queue.huey_queue import HueyJobQueue
+from refindery.adapters.transcription.extractor import AudioTranscriptExtractor
 from refindery.adapters.vector.lancedb_store import LanceDbVectorStore
 from refindery.adapters.youtube.extractor import YoutubeTranscriptExtractor
 from refindery.application.container import Container
@@ -132,7 +133,9 @@ def build_test_container(
     vector_store = LanceDbVectorStore(path=settings.lancedb.path)
     chunker = ChonkieChunker(target_tokens=64, overlap_tokens=8, hard_max_tokens=96)
     the_fetcher = fetcher or FakeFetcher()
-    router = ExtractionRouter([FakeHtmlExtractor(), YoutubeTranscriptExtractor()])
+    router = ExtractionRouter(
+        [FakeHtmlExtractor(), YoutubeTranscriptExtractor(), AudioTranscriptExtractor()]
+    )
     registry = ModelRegistry(
         store=store,
         vector_store=vector_store,

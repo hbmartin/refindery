@@ -15,6 +15,7 @@ from refindery.api.schemas import (
 )
 from refindery.application.container import Container
 from refindery.application.services.watch_service import UNSET, WatchPatch
+from refindery.domain.audio import is_audio_url
 from refindery.domain.errors import WatchNotFoundError
 from refindery.domain.ids import WatchId
 from refindery.domain.models import Watch, WatchKind
@@ -49,18 +50,30 @@ def _not_found(watch_id: str) -> HTTPException:
 
 def _validate_watch_url(kind: WatchKind, url: str) -> None:
     """Kind-specific URL checks beyond the schema's http(s) validation."""
-    if kind is not WatchKind.YOUTUBE:
-        return
+    match kind:
+        case WatchKind.YOUTUBE:
+            detail = _youtube_watch_url_error(url)
+        case WatchKind.PODCAST if is_audio_url(url):
+            detail = (
+                "URL is an audio file; a podcast watch takes the feed URL — "
+                "POST audio URLs to /v1/pages instead"
+            )
+        case _:
+            detail = None
+    if detail is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail
+        )
+
+
+def _youtube_watch_url_error(url: str) -> str | None:
     match classify_youtube_url(url):
         case YoutubeUrlKind.PLAYLIST | YoutubeUrlKind.CHANNEL:
-            return
+            return None
         case YoutubeUrlKind.VIDEO:
-            detail = "URL is a single video; POST it to /v1/pages instead"
+            return "URL is a single video; POST it to /v1/pages instead"
         case _:
-            detail = "not a recognizable YouTube playlist or channel URL"
-    raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail
-    )
+            return "not a recognizable YouTube playlist or channel URL"
 
 
 @router.post(
@@ -74,7 +87,10 @@ def _validate_watch_url(kind: WatchKind, url: str) -> None:
         "poll discovers the source's current item URLs and ingests the new "
         "ones, so they become searchable. Kind 'rss' polls an RSS/Atom feed; "
         "kind 'youtube' polls a YouTube playlist or channel and ingests each "
-        "video's transcript (single videos go to add_page instead). "
+        "video's transcript (single videos go to add_page instead); kind "
+        "'podcast' polls a podcast RSS feed and ingests each episode's audio "
+        "enclosure as a local Whisper transcript (requires a transcription "
+        "extra). "
         "Already-indexed and blacklisted items are skipped automatically. "
         "The first poll runs within a minute of creation."
     ),

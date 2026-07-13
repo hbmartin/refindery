@@ -17,6 +17,7 @@ its own durable job with retries and dead-lettering.
 | ---- | ------ | ---------------- |
 | `rss` | An RSS/Atom feed URL | The feed's entry links |
 | `youtube` | A YouTube playlist or channel URL | The listing's video URLs (each ingested as a [transcript](ingest.md#youtube-transcripts)) |
+| `podcast` | A podcast RSS feed URL | The episodes' `<enclosure>` audio URLs (each ingested as a [Whisper transcript](ingest.md#audio-transcription)) |
 
 `youtube` watches require the `youtube` extra (`uv add 'refindery[youtube]'`);
 creating one without it returns `501`. A single video URL is rejected with
@@ -24,6 +25,19 @@ creating one without it returns `501`. A single video URL is rejected with
 (`/@handle`, `/channel/…`) poll the uploads tab; per-watch `config` may set
 `max_entries` to bound how many videos each poll considers (default
 `watch.youtube_max_entries`, 100).
+
+`podcast` watches require a local Whisper transcriber — the `transcribe`
+extra, or `transcribe-mlx` on Apple Silicon, plus `ffmpeg` — and
+`fetch.audio_transcripts` left enabled; without a transcriber, creating one
+returns `501`. The watch URL is the *feed*; a direct audio-file URL is
+rejected with `422` (submit those to `POST /v1/pages`). Each poll parses the
+feed's items, keeps the ones with an audio enclosure, and ingests every new
+episode: the audio streams to a temp file (bounded by
+`REFINDERY_FETCH__AUDIO_MAX_BYTES`, default 250 MB) and is transcribed
+locally. The page's title is the episode title and its body the transcript.
+Transcribing a multi-hour episode can exceed the default 15-minute job
+lease/handler timeout, which dead-letters the job after retries — for
+long-episode feeds raise `REFINDERY_JOBS__LEASE_MINUTES` (e.g. `60`).
 
 ## Creating a watch
 

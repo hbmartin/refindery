@@ -77,6 +77,7 @@ class WatchKind(StrEnum):
 
     RSS = "rss"
     YOUTUBE = "youtube"
+    PODCAST = "podcast"
 
 
 class WatchStatus(StrEnum):

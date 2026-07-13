@@ -64,6 +64,23 @@ The audio path needs `ffmpeg` on the host. Configure with
 `REFINDERY_FETCH__YOUTUBE_*` (languages, auto-caption opt-out, Whisper model);
 to watch whole playlists/channels see [Watches](watches.md).
 
+## Audio transcription
+
+With a local Whisper transcriber installed (the `transcribe` extra, or
+`transcribe-mlx` on Apple Silicon, plus `ffmpeg`), a URL-only ingest of an
+audio file URL (`.mp3`, `.m4a`, `.ogg`, `.opus`, `.wav`, `.flac`, …) is
+transcribed instead of fetched as a page: the audio streams to a temp file —
+SSRF-guarded, capped by `REFINDERY_FETCH__AUDIO_MAX_BYTES` (default 250 MB,
+far above the 10 MB in-memory page cap) — and the transcript becomes the
+page body. A response that is not audio (an HTML error page at an `.mp3`
+URL) fails the fetch before any transcription. The Whisper model is shared
+with `REFINDERY_FETCH__YOUTUBE_WHISPER_MODEL`; disable the whole path with
+`REFINDERY_FETCH__AUDIO_TRANSCRIPTS=false`, after which audio URLs fetch as
+plain pages again. To follow podcasts see [Watches](watches.md). One dedup
+caveat: hosts that re-publish enclosures with changed cache-buster params
+(e.g. `?updated=`) create a new page per variant — add such params to
+`REFINDERY_CANONICALIZE__TRACKING_PARAMS` to collapse them.
+
 ## URL canonicalization
 
 Two requests for the "same" page must collapse to one row. Canonicalization

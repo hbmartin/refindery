@@ -1,5 +1,10 @@
 """Fetcher/extractor fakes: no network, no torch."""
 
+import asyncio
+from collections.abc import Callable
+from pathlib import Path
+
+from refindery.adapters.extraction.http_fetcher import FileFetchResult
 from refindery.application.ports.content_extractor import FetchResult
 from refindery.domain.errors import FetchFailedError
 from refindery.domain.models import ExtractedContent
@@ -18,6 +23,40 @@ class FakeFetcher:
         if (result := self.responses.get(url)) is None:
             raise FetchFailedError(url=url, detail="no fake response configured")
         return result
+
+
+class FakeFileDownloader:
+    """Writes preset (body, content_type) pairs keyed by URL to the dest file."""
+
+    def __init__(self, responses: dict[str, tuple[bytes, str]] | None = None) -> None:
+        self.responses = responses or {}
+        self.calls: list[str] = []
+
+    async def fetch_to_file(
+        self,
+        url: str,
+        *,
+        dest: Path,
+        accept: Callable[[str], bool] | None = None,
+    ) -> FileFetchResult:
+        """Mimic HttpFetcher.fetch_to_file: content-type vetted before writing."""
+        self.calls.append(url)
+        if (response := self.responses.get(url)) is None:
+            raise FetchFailedError(url=url, detail="no fake response configured")
+        body, content_type = response
+        if accept is not None and not accept(content_type):
+            raise FetchFailedError(
+                url=url, detail=f"unexpected content type {content_type!r}"
+            )
+        await asyncio.to_thread(dest.write_bytes, body)
+        return FileFetchResult(
+            url=url,
+            final_url=url,
+            status_code=200,
+            content_type=content_type,
+            path=dest,
+            size_bytes=len(body),
+        )
 
 
 class FakeHtmlExtractor:

@@ -107,3 +107,11 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
 - Preserve omitted-versus-null PATCH semantics with an explicit unset sentinel for
   nullable fields, and fail a durable fan-out job when every child operation fails
   so the queue can retry instead of recording a false success.
+- Route user-controlled watch fetches through an SSRF-safe transport that validates
+  and pins resolved public addresses and revalidates every redirect; schema-only URL
+  checks do not prevent DNS rebinding or redirect-based access to internal services.
+- Validate JSON-backed typed fields when hydrating database rows; successful
+  `json.loads` does not guarantee the decoded value matches the domain type.
+- On a shared SQLite connection, handle expected uniqueness conflicts with
+  `ON CONFLICT DO NOTHING` instead of rolling back a transaction that may include
+  another coroutine's pending work.

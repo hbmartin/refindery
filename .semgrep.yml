@@ -9,3 +9,13 @@ rules:
       include:
         - docs_api_reference.py
     pattern-regex: '" \| "'
+  - id: no-automatic-http-redirects-in-secure-fetcher
+    languages: [python]
+    message: >-
+      Follow redirects explicitly so every destination is resolved, validated,
+      and pinned before connecting.
+    severity: ERROR
+    paths:
+      include:
+        - /src/refindery/adapters/extraction/http_fetcher.py
+    pattern: httpx.AsyncClient(..., follow_redirects=True, ...)

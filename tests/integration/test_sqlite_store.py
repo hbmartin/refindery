@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 import pytest
+from pydantic import ValidationError
 
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.domain.ids import (
@@ -17,6 +18,7 @@ from refindery.domain.ids import (
     new_chunk_id,
     new_job_id,
     new_page_id,
+    new_watch_id,
 )
 from refindery.domain.models import (
     BlacklistKind,
@@ -31,6 +33,9 @@ from refindery.domain.models import (
     Page,
     PageStatus,
     TombstoneStatus,
+    Watch,
+    WatchKind,
+    WatchStatus,
 )
 
 NOW = datetime(2026, 7, 8, 12, 0, 0, tzinfo=UTC)
@@ -77,6 +82,29 @@ def _model(model_id: str = "voyage-3.5", *, is_active: bool = False) -> Embeddin
         is_active=is_active,
         status=ModelStatus.READY,
         created_at=NOW,
+    )
+
+
+def _watch(
+    url: str = "https://example.com/feed.xml",
+    *,
+    config: dict[str, str] | None = None,
+) -> Watch:
+    return Watch(
+        id=new_watch_id(),
+        kind=WatchKind.RSS,
+        url=url,
+        title="Example feed",
+        enabled=True,
+        interval_hours=24,
+        config=config,
+        next_run_at=NOW,
+        last_run_at=None,
+        last_status=WatchStatus.PENDING,
+        last_error=None,
+        last_item_count=None,
+        created_at=NOW,
+        updated_at=NOW,
     )
 
 
@@ -206,6 +234,53 @@ async def test_model_registry_single_active(store):
 async def test_job_idempotency(store):
     assert await store.create_job(_job()) is True
     assert await store.create_job(_job()) is False  # same idempotency key
+
+
+async def test_watch_roundtrip_validates_config(store) -> None:
+    watch = _watch(config={"category": "engineering"})
+    assert await store.create_watch(watch) is True
+    assert await store.get_watch(watch.id) == watch
+
+
+async def test_watch_rejects_invalid_persisted_config(store) -> None:
+    watch = _watch()
+    assert await store.create_watch(watch) is True
+    await store.conn.execute(
+        "UPDATE watches SET config = ? WHERE id = ?", ("[]", watch.id)
+    )
+    await store.conn.commit()
+
+    with pytest.raises(ValidationError, match="Input should be an object"):
+        await store.get_watch(watch.id)
+
+
+async def test_duplicate_watch_does_not_rollback_pending_work(store) -> None:
+    watch = _watch()
+    assert await store.create_watch(watch) is True
+    pending_rule = BlacklistRule(
+        id=new_blacklist_id(),
+        pattern="https://pending.example/page",
+        kind=BlacklistKind.URL,
+        created_at=NOW,
+    )
+    await store.conn.execute(
+        "INSERT INTO blacklist (id, pattern, kind, reason, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            pending_rule.id,
+            pending_rule.pattern,
+            pending_rule.kind,
+            pending_rule.reason,
+            pending_rule.created_at.isoformat(),
+        ),
+    )
+
+    duplicate = replace(watch, id=new_watch_id())
+    assert await store.create_watch(duplicate) is False
+    cursor = await store.conn.execute(
+        "SELECT id FROM blacklist WHERE id = ?", (pending_rule.id,)
+    )
+    assert await cursor.fetchone() is not None
 
 
 async def test_job_lifecycle(store):

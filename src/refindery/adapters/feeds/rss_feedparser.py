@@ -25,7 +25,10 @@ def _entry_published(entry: feedparser.FeedParserDict) -> datetime | None:
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if not isinstance(parsed, struct_time):
         return None
-    return datetime(*parsed[:6], tzinfo=UTC)
+    try:
+        return datetime(*parsed[:6], tzinfo=UTC)
+    except (OverflowError, ValueError):
+        return None
 
 
 def parse_feed(*, raw: bytes, base_url: str) -> list[WatchItem]:

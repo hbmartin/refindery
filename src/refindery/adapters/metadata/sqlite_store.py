@@ -15,6 +15,7 @@ from types import TracebackType
 from typing import Self
 
 import aiosqlite
+from pydantic import TypeAdapter
 from uuid6 import uuid7
 
 from refindery.adapters.metadata import migrator
@@ -73,6 +74,7 @@ _WATCH_COLUMNS = (
     "last_run_at, last_status, last_error, last_item_count, created_at, updated_at"
 )
 _SQLITE_VARIABLE_BATCH_SIZE = 999
+_WATCH_CONFIG_ADAPTER = TypeAdapter(dict[str, str])
 
 
 def _ts(value: datetime | None) -> str | None:
@@ -119,6 +121,11 @@ def _job_from_row(row: sqlite3.Row) -> Job:
 
 
 def _watch_from_row(row: sqlite3.Row) -> Watch:
+    config = (
+        None
+        if row["config"] is None
+        else _WATCH_CONFIG_ADAPTER.validate_json(row["config"])
+    )
     return Watch(
         id=WatchId(row["id"]),
         kind=WatchKind(row["kind"]),
@@ -126,7 +133,7 @@ def _watch_from_row(row: sqlite3.Row) -> Watch:
         title=row["title"],
         enabled=bool(row["enabled"]),
         interval_hours=row["interval_hours"],
-        config=None if row["config"] is None else json.loads(row["config"]),
+        config=config,
         next_run_at=datetime.fromisoformat(row["next_run_at"]),
         last_run_at=_dt(row["last_run_at"]),
         last_status=WatchStatus(row["last_status"]),
@@ -1565,32 +1572,29 @@ class SqliteMetadataStore(_EntityClusterMixin):
 
     async def create_watch(self, watch: Watch) -> bool:
         """Insert a watch row; False when (kind, url) already exists."""
-        try:
-            await self.conn.execute(
-                f"INSERT INTO watches ({_WATCH_COLUMNS}) "  # noqa: S608
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    watch.id,
-                    watch.kind,
-                    watch.url,
-                    watch.title,
-                    watch.enabled,
-                    watch.interval_hours,
-                    None if watch.config is None else json.dumps(watch.config),
-                    _ts(watch.next_run_at),
-                    _ts(watch.last_run_at),
-                    watch.last_status,
-                    watch.last_error,
-                    watch.last_item_count,
-                    _ts(watch.created_at),
-                    _ts(watch.updated_at),
-                ),
-            )
-        except sqlite3.IntegrityError:
-            await self.conn.rollback()
-            return False
+        cursor = await self.conn.execute(
+            f"INSERT INTO watches ({_WATCH_COLUMNS}) "  # noqa: S608
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(kind, url) DO NOTHING",
+            (
+                watch.id,
+                watch.kind,
+                watch.url,
+                watch.title,
+                watch.enabled,
+                watch.interval_hours,
+                None if watch.config is None else json.dumps(watch.config),
+                _ts(watch.next_run_at),
+                _ts(watch.last_run_at),
+                watch.last_status,
+                watch.last_error,
+                watch.last_item_count,
+                _ts(watch.created_at),
+                _ts(watch.updated_at),
+            ),
+        )
         await self.conn.commit()
-        return True
+        return cursor.rowcount > 0
 
     async def get_watch(self, watch_id: WatchId) -> Watch | None:
         """Fetch one watch."""

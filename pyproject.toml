@@ -45,6 +45,7 @@ dependencies = [
     "scikit-learn>=1.9.0",
     "scipy>=1.18.0",
     "spacy>=3.8.3,<4",
+    "starlette>=0.46.0",
     "transformers>=5.13.0",
     "umap-learn>=0.5.12",
     "uuid6>=2025.0.1",
@@ -124,11 +125,6 @@ DEP002 = [
     "opentelemetry-exporter-otlp-proto-http",
     "opentelemetry-instrumentation-fastapi",
 ]
-DEP003 = [
-    # fastapi is built on starlette; importing its types directly is intentional.
-    "starlette",
-]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

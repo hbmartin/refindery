@@ -6,10 +6,10 @@ that polls a source on its own schedule (default every 24 hours), discovers
 the source's current item URLs, and ingests each new one through the normal
 pipeline so it becomes searchable.
 
-Watches reuse ingest's dedup: a discovered URL that is already indexed is a
-cheap revisit no-op, and blacklisted URLs are skipped. One misbehaving feed
-never affects other watches — each poll is its own durable job with retries
-and dead-lettering.
+Watches reuse ingest's dedup: a discovered URL that is already indexed records
+a cheap revisit, while unchanged content is not reprocessed; blacklisted URLs
+are skipped. One misbehaving feed never affects other watches — each poll is
+its own durable job with retries and dead-lettering.
 
 ## Watch kinds
 
@@ -35,8 +35,10 @@ curl -X POST http://127.0.0.1:8000/v1/watches \
 ```
 
 `interval_hours` defaults to `watch.default_interval_hours` (24). The first
-poll runs within a minute of creation; after that, one poll per interval.
-Creating the same `(kind, url)` twice returns `409`.
+poll becomes eligible on the next enabled scheduler tick, subject to the
+`max_due_per_tick` backlog; disabling `poll_tick_enabled` prevents automatic
+polls. After that, the watch is eligible once per interval. Creating the same
+`(kind, url)` twice returns `409`.
 
 ## Managing watches
 
@@ -72,7 +74,7 @@ write-scoped token). See [MCP for agents](mcp.md).
 - A failed poll records `last_status: error` with the failure detail, then
   retries with backoff and eventually dead-letters — for that watch only.
 - Polls returning more than `watch.max_items_per_poll` items keep the newest
-  and log how many were dropped.
+  and log how many items were returned and retained.
 
 ## Settings
 

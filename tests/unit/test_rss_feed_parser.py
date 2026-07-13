@@ -1,12 +1,19 @@
 """RSS/Atom parsing: real feed bytes in, WatchItems out, bad entries dropped."""
 
 from datetime import UTC, datetime
+from time import struct_time
 
-from refindery.adapters.feeds.rss_feedparser import RssWatchSource, parse_feed
+import feedparser
+
+from refindery.adapters.feeds.rss_feedparser import (
+    RssWatchSource,
+    _entry_published,
+    parse_feed,
+)
 from refindery.application.ports.content_extractor import FetchResult
 from tests.fakes.extraction import FakeFetcher
 
-RSS2 = b"""<?xml version="1.0" encoding="UTF-8"?>
+RSS2: bytes = b"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel>
   <title>Example Blog</title>
   <link>https://blog.example/</link>
@@ -25,7 +32,7 @@ RSS2 = b"""<?xml version="1.0" encoding="UTF-8"?>
 </channel></rss>
 """
 
-ATOM = b"""<?xml version="1.0" encoding="utf-8"?>
+ATOM: bytes = b"""<?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <title>Example Atom</title>
   <entry>
@@ -40,14 +47,14 @@ ATOM = b"""<?xml version="1.0" encoding="utf-8"?>
 </feed>
 """
 
-MALFORMED_LINK = b"""<rss><channel>
+MALFORMED_LINK: bytes = b"""<rss><channel>
   <item><link>http://[broken</link></item>
   <item><link>https://example.com/good</link></item>
 </channel></rss>
 """
 
 
-def test_rss2_items_parsed_with_titles_and_dates():
+def test_rss2_items_parsed_with_titles_and_dates() -> None:
     items = parse_feed(raw=RSS2, base_url="https://blog.example/feed.xml")
     assert [item.url for item in items] == [
         "https://blog.example/posts/first",
@@ -58,29 +65,29 @@ def test_rss2_items_parsed_with_titles_and_dates():
     assert items[1].published_at is None
 
 
-def test_relative_links_resolve_against_base_url():
+def test_relative_links_resolve_against_base_url() -> None:
     items = parse_feed(raw=RSS2, base_url="https://blog.example/feed.xml")
     assert items[1].url == "https://blog.example/posts/relative"
 
 
-def test_entry_without_link_is_skipped():
+def test_entry_without_link_is_skipped() -> None:
     items = parse_feed(raw=RSS2, base_url="https://blog.example/feed.xml")
     assert len(items) == 2
 
 
-def test_atom_entries_parse_and_invalid_scheme_dropped():
+def test_atom_entries_parse_and_invalid_scheme_dropped() -> None:
     items = parse_feed(raw=ATOM, base_url="https://atom.example/feed.atom")
     assert [item.url for item in items] == ["https://atom.example/entries/1"]
     assert items[0].title == "Atom Entry"
     assert items[0].published_at == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
-def test_malformed_xml_yields_no_items():
+def test_malformed_xml_yields_no_items() -> None:
     items = parse_feed(raw=b"this is not xml <<<", base_url="https://x.example/feed")
     assert items == []
 
 
-def test_malformed_link_is_dropped_without_hiding_valid_entries():
+def test_malformed_link_is_dropped_without_hiding_valid_entries() -> None:
     items = parse_feed(
         raw=MALFORMED_LINK,
         base_url="https://example.com/feed.xml",
@@ -88,7 +95,14 @@ def test_malformed_link_is_dropped_without_hiding_valid_entries():
     assert [item.url for item in items] == ["https://example.com/good"]
 
 
-async def test_source_fetches_and_parses_via_fetcher():
+def test_extreme_date_is_dropped_without_crashing() -> None:
+    entry = feedparser.FeedParserDict(
+        published_parsed=struct_time((10**100, 1, 1, 0, 0, 0, 0, 1, 0))
+    )
+    assert _entry_published(entry) is None
+
+
+async def test_source_fetches_and_parses_via_fetcher() -> None:
     feed_url = "https://blog.example/feed.xml"
     fetcher = FakeFetcher(
         {

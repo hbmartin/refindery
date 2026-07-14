@@ -7,7 +7,7 @@ import feedparser
 
 from refindery.adapters.feeds.rss_feedparser import (
     RssWatchSource,
-    _entry_published,
+    entry_published,
     parse_feed,
 )
 from refindery.application.ports.content_extractor import FetchResult
@@ -99,7 +99,7 @@ def test_extreme_date_is_dropped_without_crashing() -> None:
     entry = feedparser.FeedParserDict(
         published_parsed=struct_time((10**100, 1, 1, 0, 0, 0, 0, 1, 0))
     )
-    assert _entry_published(entry) is None
+    assert entry_published(entry) is None
 
 
 async def test_source_fetches_and_parses_via_fetcher() -> None:

@@ -10,7 +10,7 @@ import platform
 from importlib.util import find_spec
 from pathlib import Path
 
-from refindery.adapters.youtube.envelope import YOUTUBE_TRANSCRIPT_CONTENT_TYPE
+from refindery.adapters.transcription.envelope import AUDIO_TRANSCRIPT_CONTENT_TYPE
 from refindery.application.ports.transcriber import Transcriber
 from refindery.domain.errors import ExtractionUnavailableError
 
@@ -27,7 +27,7 @@ class MlxWhisperTranscriber:
     def __init__(self, *, model: str = "small") -> None:
         if not _apple_silicon() or find_spec("mlx_whisper") is None:
             raise ExtractionUnavailableError(
-                content_type=YOUTUBE_TRANSCRIPT_CONTENT_TYPE, extra="transcribe-mlx"
+                content_type=AUDIO_TRANSCRIPT_CONTENT_TYPE, extra="transcribe-mlx"
             )
         self._repo = f"mlx-community/whisper-{model}-mlx"
 
@@ -50,7 +50,7 @@ class FasterWhisperTranscriber:
     def __init__(self, *, model: str = "small") -> None:
         if find_spec("faster_whisper") is None:
             raise ExtractionUnavailableError(
-                content_type=YOUTUBE_TRANSCRIPT_CONTENT_TYPE, extra="transcribe"
+                content_type=AUDIO_TRANSCRIPT_CONTENT_TYPE, extra="transcribe"
             )
         self._model_name = model
         self._model: object | None = None

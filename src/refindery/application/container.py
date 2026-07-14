@@ -18,6 +18,7 @@ from refindery.adapters.extraction.pdf_pypdf import PypdfExtractor
 from refindery.adapters.extraction.routing_fetcher import RoutingFetcher
 from refindery.adapters.extractors.chain import ChainExtractor
 from refindery.adapters.extractors.gazetteer import GazetteerExtractor
+from refindery.adapters.feeds.podcast_feedparser import PodcastWatchSource
 from refindery.adapters.feeds.rss_feedparser import RssWatchSource
 from refindery.adapters.llm.openai_compat import OpenAiCompatClient
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
@@ -29,10 +30,12 @@ from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.resilience.circuit_breaker import BreakerConfig, BreakerRegistry
 from refindery.adapters.resilience.retry import RetryPolicy
 from refindery.adapters.resilience.wrappers import ResilientEmbedder, ResilientReranker
+from refindery.adapters.transcription.audio_fetcher import AudioTranscriptFetcher
+from refindery.adapters.transcription.extractor import AudioTranscriptExtractor
+from refindery.adapters.transcription.whisper import build_transcriber
 from refindery.adapters.youtube.backend import YoutubeBackend, YtDlpBackend
 from refindery.adapters.youtube.caption_fetcher import YoutubeCaptionFetcher
 from refindery.adapters.youtube.extractor import YoutubeTranscriptExtractor
-from refindery.adapters.youtube.transcriber import build_transcriber
 from refindery.adapters.youtube.watch_source import YoutubeWatchSource
 from refindery.application.job_events import JobEventBus
 from refindery.application.ports.chunker import Chunker
@@ -44,6 +47,7 @@ from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.query_log import QueryLogSink
 from refindery.application.ports.reranker import Reranker
+from refindery.application.ports.transcriber import Transcriber
 from refindery.application.ports.vector_store import VectorStore
 from refindery.application.services.admin_eval import AdminEvalService
 from refindery.application.services.backfill import BackfillService
@@ -455,6 +459,7 @@ def _build_extractors() -> list[ContentExtractor]:
     extractors: list[ContentExtractor] = [
         PypdfExtractor(),
         YoutubeTranscriptExtractor(),
+        AudioTranscriptExtractor(),
     ]
     try:
         from refindery.adapters.extraction.pulpie_html import (  # noqa: PLC0415 — lazy: requires the html extra
@@ -467,7 +472,37 @@ def _build_extractors() -> list[ContentExtractor]:
     return extractors
 
 
-def _build_youtube(settings: Settings) -> tuple[Fetcher | None, YoutubeBackend | None]:
+def _build_transcriber(settings: Settings) -> Transcriber | None:
+    """One shared Whisper transcriber for the YouTube fallback and audio URLs."""
+    if not (
+        settings.fetch.youtube_transcribe_fallback or settings.fetch.audio_transcripts
+    ):
+        return None
+    return build_transcriber(model=settings.fetch.youtube_whisper_model)
+
+
+def _build_audio(
+    settings: Settings, *, transcriber: Transcriber | None
+) -> Fetcher | None:
+    """Build the audio transcript fetcher, or None when transcription is off."""
+    if not settings.fetch.audio_transcripts:
+        return None
+    if transcriber is None:
+        logger.info(
+            "no whisper transcriber installed; audio URLs fetch as plain pages "
+            "(install the 'transcribe' or 'transcribe-mlx' extra for transcripts)"
+        )
+        return None
+    downloader = HttpFetcher(
+        timeout_s=settings.fetch.audio_timeout_s,
+        max_bytes=settings.fetch.audio_max_bytes,
+    )
+    return AudioTranscriptFetcher(downloader=downloader, transcriber=transcriber)
+
+
+def _build_youtube(
+    settings: Settings, *, transcriber: Transcriber | None
+) -> tuple[Fetcher | None, YoutubeBackend | None]:
     """Build the caption fetcher + shared yt-dlp backend, or (None, None)."""
     if not settings.fetch.youtube_captions:
         return None, None
@@ -479,11 +514,6 @@ def _build_youtube(settings: Settings) -> tuple[Fetcher | None, YoutubeBackend |
             "(install the 'youtube' extra for transcripts)"
         )
         return None, None
-    transcriber = (
-        build_transcriber(model=settings.fetch.youtube_whisper_model)
-        if settings.fetch.youtube_transcribe_fallback
-        else None
-    )
     fetcher = YoutubeCaptionFetcher(
         backend=backend,
         transcriber=transcriber,
@@ -515,11 +545,15 @@ def build_container(settings: Settings) -> Container:
     http_fetcher = HttpFetcher(
         timeout_s=settings.fetch.timeout_s, max_bytes=settings.fetch.max_bytes
     )
-    youtube_fetcher, youtube_backend = _build_youtube(settings)
+    transcriber = _build_transcriber(settings)
+    youtube_fetcher, youtube_backend = _build_youtube(settings, transcriber=transcriber)
+    audio_fetcher = _build_audio(settings, transcriber=transcriber)
     fetcher: Fetcher = (
         http_fetcher
-        if youtube_fetcher is None
-        else RoutingFetcher(default=http_fetcher, youtube=youtube_fetcher)
+        if youtube_fetcher is None and audio_fetcher is None
+        else RoutingFetcher(
+            default=http_fetcher, youtube=youtube_fetcher, audio=audio_fetcher
+        )
     )
     router = ExtractionRouter(_build_extractors())
     registry = ModelRegistry(
@@ -667,6 +701,8 @@ def build_container(settings: Settings) -> Container:
             max_entries=settings.watch.youtube_max_entries,
             timeout_s=settings.fetch.youtube_timeout_s,
         )
+    if audio_fetcher is not None:
+        sources[WatchKind.PODCAST] = PodcastWatchSource(fetcher=fetcher)
     watches = WatchService(
         store=store,
         queue=queue,

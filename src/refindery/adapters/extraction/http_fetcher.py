@@ -5,17 +5,32 @@ The raw response is an external input: it is validated into the pydantic
 downstream touches it. DNS results are validated and pinned before each
 connection so user-controlled URLs cannot reach non-public services through
 literal addresses, redirects, or DNS rebinding.
+
+``fetch_to_file`` shares the same pinned transport but streams the body to
+disk instead of buffering it, for payloads (podcast audio) far beyond the
+in-memory cap; its byte limit is this instance's ``max_bytes``, so audio
+callers construct a dedicated instance with audio-sized limits.
 """
 
 import asyncio
 import socket
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv6Address, ip_address
-from typing import Annotated, Protocol
+from pathlib import Path
+from typing import Annotated, BinaryIO, Protocol
 from urllib.parse import urljoin
 
 import httpx
-from pydantic import Field, IPvAnyAddress, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    IPvAnyAddress,
+    TypeAdapter,
+    ValidationError,
+)
 
 from refindery.application.ports.content_extractor import FetchResult
 from refindery.domain.errors import FetchFailedError
@@ -47,6 +62,28 @@ class _PinnedTarget:
     request_url: httpx.URL
     host_header: str
     sni_hostname: str
+
+
+class FileFetchResult(BaseModel):
+    """Outcome of streaming a response body to a file on disk."""
+
+    model_config = ConfigDict(frozen=True)
+
+    url: str
+    final_url: str
+    status_code: int
+    content_type: str
+    path: Path
+    size_bytes: int
+
+
+def _normalized_content_type(response: httpx.Response) -> str:
+    raw = response.headers.get("content-type", "application/octet-stream")
+    return raw.split(";", 1)[0].strip().lower()
+
+
+def _open_for_writing(dest: Path) -> BinaryIO:
+    return dest.open("wb")
 
 
 async def _system_resolver(*, host: str, port: int) -> tuple[IPAddress, ...]:
@@ -85,7 +122,66 @@ class HttpFetcher:
         except (httpx.HTTPError, OSError, ValidationError, ValueError) as exc:
             raise FetchFailedError(url=url, detail=repr(exc)) from exc
 
+    async def fetch_to_file(
+        self,
+        url: str,
+        *,
+        dest: Path,
+        accept: Callable[[str], bool] | None = None,
+    ) -> FileFetchResult:
+        """Stream the response body to ``dest``; raise FetchFailedError on failure.
+
+        ``accept`` vets the normalized content type before any body byte is
+        read. A failed or rejected fetch may leave a partial file behind;
+        cleanup of ``dest`` is the caller's responsibility.
+        """
+        try:
+            return await self._fetch_to_file(url, dest=dest, accept=accept)
+        except FetchFailedError:
+            raise
+        except (httpx.HTTPError, OSError, ValidationError, ValueError) as exc:
+            raise FetchFailedError(url=url, detail=repr(exc)) from exc
+
     async def _fetch(self, url: str) -> FetchResult:
+        async with self._stream(url) as (response, final_url):
+            body = await self._read_body(response, source_url=url)
+            return FetchResult(
+                url=url,
+                final_url=final_url,
+                status_code=response.status_code,
+                content_type=response.headers.get(
+                    "content-type", "application/octet-stream"
+                ),
+                charset=response.charset_encoding,
+                body=body,
+            )
+
+    async def _fetch_to_file(
+        self,
+        url: str,
+        *,
+        dest: Path,
+        accept: Callable[[str], bool] | None,
+    ) -> FileFetchResult:
+        async with self._stream(url) as (response, final_url):
+            content_type = _normalized_content_type(response)
+            if accept is not None and not accept(content_type):
+                raise FetchFailedError(
+                    url=url, detail=f"unexpected content type {content_type!r}"
+                )
+            size_bytes = await self._write_body(response, dest=dest, source_url=url)
+            return FileFetchResult(
+                url=url,
+                final_url=final_url,
+                status_code=response.status_code,
+                content_type=content_type,
+                path=dest,
+                size_bytes=size_bytes,
+            )
+
+    @asynccontextmanager
+    async def _stream(self, url: str) -> AsyncGenerator[tuple[httpx.Response, str]]:
+        """Yield the final non-redirect response (SSRF-pinned) and its URL."""
         current_url = httpx.URL(url)
         async with httpx.AsyncClient(
             follow_redirects=False,
@@ -115,17 +211,8 @@ class HttpFetcher:
                         )
                         continue
                     response.raise_for_status()
-                    body = await self._read_body(response, source_url=url)
-                    return FetchResult(
-                        url=url,
-                        final_url=str(current_url),
-                        status_code=response.status_code,
-                        content_type=response.headers.get(
-                            "content-type", "application/octet-stream"
-                        ),
-                        charset=response.charset_encoding,
-                        body=body,
-                    )
+                    yield response, str(current_url)
+                    return
         raise AssertionError("unreachable")
 
     async def _pin(self, url: httpx.URL) -> _PinnedTarget:
@@ -156,3 +243,21 @@ class HttpFetcher:
                     detail=f"body exceeds {self._max_bytes} bytes",
                 )
         return bytes(body)
+
+    async def _write_body(
+        self, response: httpx.Response, *, dest: Path, source_url: str
+    ) -> int:
+        size_bytes = 0
+        handle = await asyncio.to_thread(_open_for_writing, dest)
+        try:
+            async for chunk in response.aiter_bytes():
+                size_bytes += len(chunk)
+                if size_bytes > self._max_bytes:
+                    raise FetchFailedError(
+                        url=source_url,
+                        detail=f"body exceeds {self._max_bytes} bytes",
+                    )
+                await asyncio.to_thread(handle.write, chunk)
+        finally:
+            await asyncio.to_thread(handle.close)
+        return size_bytes

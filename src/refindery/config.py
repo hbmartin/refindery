@@ -165,6 +165,13 @@ class FetchSettings(BaseModel):
     whether auto-generated captions are acceptable, and whether captionless
     videos fall back to local Whisper transcription (``transcribe`` /
     ``transcribe-mlx`` extra + ffmpeg).
+
+    The ``audio_*`` knobs control transcription of audio URLs — podcast
+    enclosures discovered by watches and audio files posted directly. Audio
+    downloads stream to a temp file bounded by ``audio_max_bytes`` and
+    ``audio_timeout_s`` instead of the in-memory ``max_bytes`` cap. The
+    Whisper model is shared with ``youtube_whisper_model``; transcription
+    requires the ``transcribe`` or ``transcribe-mlx`` extra + ffmpeg.
     """
 
     timeout_s: float = Field(default=10.0, gt=0)
@@ -175,6 +182,9 @@ class FetchSettings(BaseModel):
     youtube_transcribe_fallback: bool = True
     youtube_whisper_model: str = "small"
     youtube_timeout_s: float = Field(default=60.0, gt=0)
+    audio_transcripts: bool = True
+    audio_max_bytes: int = Field(default=250_000_000, ge=1)
+    audio_timeout_s: float = Field(default=300.0, gt=0)
 
 
 class WatchSettings(BaseModel):

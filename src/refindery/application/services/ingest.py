@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from refindery.application.ports.clock import Clock
+from refindery.application.ports.content_extractor import FetchRoute
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.services.extraction_router import ExtractionRouter
@@ -39,6 +40,7 @@ class IngestRequest:
     fetched_at: datetime | None = None
     source: str | None = None
     metadata: Mapping[str, object] | None = None
+    fetch_route: FetchRoute = FetchRoute.AUTO
 
 
 class IngestService:
@@ -110,9 +112,12 @@ class IngestService:
         await self._store.insert_page(page)
 
         if body_text is None:
+            payload: dict[str, str] = {"page_id": page.id}
+            if request.fetch_route is not FetchRoute.AUTO:
+                payload["fetch_route"] = request.fetch_route.value
             await self._queue.enqueue(
                 kind=JobKind.FETCH_AND_INDEX,
-                payload={"page_id": page.id},
+                payload=payload,
                 idempotency_key=f"fetch:{page.id}",
             )
         else:

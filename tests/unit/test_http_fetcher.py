@@ -1,6 +1,7 @@
 """HttpFetcher tests over a mocked httpx transport (pytest-httpx)."""
 
 from ipaddress import IPv4Address
+from pathlib import Path
 
 import httpx
 import pytest
@@ -150,6 +151,68 @@ async def test_redirect_target_is_validated_before_request(
     with pytest.raises(FetchFailedError, match=r"non-public.*127\.0\.0\.1"):
         await HttpFetcher(resolver=resolver).fetch(URL)
     assert len(httpx_mock.get_requests()) == 1
+
+
+async def test_fetch_to_file_streams_body_to_dest(
+    httpx_mock: HTTPXMock, tmp_path: Path
+) -> None:
+    httpx_mock.add_response(
+        url=PINNED_URL,
+        content=b"ID3fakeaudio",
+        headers={"content-type": "Audio/MPEG; charset=binary"},
+    )
+    dest = tmp_path / "audio.mp3"
+    result = await _fetcher().fetch_to_file(URL, dest=dest)
+    assert result.url == URL
+    assert result.final_url == URL
+    assert result.status_code == 200
+    assert result.content_type == "audio/mpeg"
+    assert result.path == dest
+    assert result.size_bytes == len(b"ID3fakeaudio")
+    assert dest.read_bytes() == b"ID3fakeaudio"
+
+
+async def test_fetch_to_file_follows_redirects(
+    httpx_mock: HTTPXMock, tmp_path: Path
+) -> None:
+    httpx_mock.add_response(
+        url=PINNED_URL,
+        status_code=302,
+        headers={"location": "https://example.test/ep.mp3"},
+    )
+    httpx_mock.add_response(
+        url="https://1.1.1.1/ep.mp3",
+        content=b"moved audio",
+        headers={"content-type": "audio/mpeg"},
+    )
+    dest = tmp_path / "audio.mp3"
+    result = await _fetcher().fetch_to_file(URL, dest=dest)
+    assert result.final_url == "https://example.test/ep.mp3"
+    assert dest.read_bytes() == b"moved audio"
+
+
+async def test_fetch_to_file_enforces_the_size_cap(
+    httpx_mock: HTTPXMock, tmp_path: Path
+) -> None:
+    httpx_mock.add_response(url=PINNED_URL, content=b"x" * 11)
+    with pytest.raises(FetchFailedError, match="body exceeds 10 bytes"):
+        await _fetcher(max_bytes=10).fetch_to_file(URL, dest=tmp_path / "audio.mp3")
+
+
+async def test_fetch_to_file_rejects_content_type_before_writing(
+    httpx_mock: HTTPXMock, tmp_path: Path
+) -> None:
+    httpx_mock.add_response(
+        url=PINNED_URL,
+        content=b"<html>not audio</html>",
+        headers={"content-type": "text/html; charset=utf-8"},
+    )
+    dest = tmp_path / "audio.mp3"
+    with pytest.raises(FetchFailedError, match="unexpected content type 'text/html'"):
+        await _fetcher().fetch_to_file(
+            URL, dest=dest, accept=lambda ct: ct.startswith("audio/")
+        )
+    assert not dest.exists()
 
 
 async def test_same_host_redirect_is_reresolved_to_block_rebinding(

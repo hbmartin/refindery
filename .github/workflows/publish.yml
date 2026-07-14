@@ -23,6 +23,15 @@ jobs:
       run: uv sync --locked --all-groups
     - name: Run tests before build
       run: uv run pytest -m "not external"
+    - name: Fetch cockpit admin UI bundle
+      # Downloads the pinned static bundle (COCKPIT_UI_VERSION) into
+      # src/refindery/api/static/admin so uv_build includes it in the wheel and
+      # `refindery serve` exposes the UI at /admin. github.token can read a
+      # public refindery-cockpit; a private repo needs a PAT secret with read
+      # access to it exported as GH_TOKEN instead.
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash scripts/fetch-cockpit-ui.sh
     - name: Build distributions
       run: uv build
     - name: Check distributions

@@ -37,6 +37,7 @@ nav = [
     { "Entities" = "guides/entities.md" },
     { "Embedding models" = "guides/models.md" },
     { "Deletion & blacklist" = "guides/deletion.md" },
+    { "Admin UI" = "guides/admin-ui.md" },
   ] },
   { "Configuration" = [
     { "Overview" = "configuration/index.md" },

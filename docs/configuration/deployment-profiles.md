@@ -77,6 +77,27 @@ curl -s http://127.0.0.1:8000/healthz
 On macOS, `./scripts/setup-macos-docker.sh` automates this and writes
 `.env.docker`, keeping it separate from a host-Python `.env`.
 
+## Two-process (cockpit SSR)
+
+The default deployment bundles the [admin UI](../guides/admin-ui.md) as static
+assets inside the wheel, served at `/admin` by the same process as the API — no
+extra runtime. This is the recommended profile.
+
+If you specifically need the cockpit's server-side rendering features (per-request
+CSP nonces, server-applied security headers, the telemetry proxy, or SSR i18n),
+run it as its own Node service from the
+[`refindery-cockpit`](https://github.com/hbmartin/refindery-cockpit) repo instead
+and put both behind one origin so the browser still reaches the API with relative
+paths:
+
+- a reverse proxy (Caddy/nginx/Traefik) routing `/admin` to the Node process and
+  everything else to refindery, **or**
+- refindery reverse-proxying `/admin` to the Node service.
+
+This costs a second runtime to run and supervise and is unnecessary for a
+single-user, same-origin admin console — prefer the bundled static build unless
+you have a concrete need for SSR.
+
 ## Network access
 
 The default bind address is loopback-only. If another machine must connect, set

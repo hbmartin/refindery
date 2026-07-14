@@ -64,6 +64,14 @@ Read-only tools (`search`, `get_page`, `similar_to`, `list_clusters`, …) are
 exposed by default; mutating tools are opt-in. See the
 [MCP guide](../guides/mcp.md).
 
+## 5. Open the admin UI
+
+Published wheels bundle the cockpit admin UI. With the server running, open
+<http://127.0.0.1:8000/admin> and paste your `REFINDERY_AUTH_TOKEN` when
+prompted — it is held client-side and sent as a bearer token on every API call
+from the same origin, so no CORS or login flow is involved. See the
+[Admin UI guide](../guides/admin-ui.md).
+
 ## Next steps
 
 - [Validate the install](validate.md) — health/readiness and a resolved-config dump.

@@ -9,6 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
+# Cockpit admin UI bundle, injected into the wheel at release time from a
+# pinned refindery-cockpit GitHub release (see COCKPIT_UI_VERSION). Never
+# committed; a source checkout simply serves no /admin.
+src/refindery/api/static/admin/
+
 # Local runtime configuration and state
 .env
 .env.docker

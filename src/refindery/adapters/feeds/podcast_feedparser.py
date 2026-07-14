@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from refindery.adapters.feeds.rss_feedparser import entry_published
 from refindery.application.ports.content_extractor import Fetcher
 from refindery.application.ports.watch_source import WatchItem
-from refindery.domain.audio import is_audio_url
+from refindery.domain.audio import is_audio_content_type, is_audio_url
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +38,14 @@ def _enclosure_candidates(entry: feedparser.FeedParserDict) -> list[dict[str, ob
 
 
 def _audio_enclosure(entry: feedparser.FeedParserDict) -> str | None:
-    """First enclosure href typed ``audio/*``, or untyped with an audio path."""
+    """First audio/generic typed href, or untyped href with an audio path."""
     for candidate in _enclosure_candidates(entry):
         href = candidate.get("href") or candidate.get("url")
         if not isinstance(href, str) or not href:
             continue
         content_type = candidate.get("type")
         if isinstance(content_type, str) and content_type.strip():
-            if content_type.strip().lower().startswith("audio/"):
+            if is_audio_content_type(content_type):
                 return href
         elif is_audio_url(href):
             return href

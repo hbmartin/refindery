@@ -48,6 +48,21 @@ PODCAST_ATOM: bytes = b"""<?xml version="1.0" encoding="utf-8"?>
 </feed>
 """
 
+PODCAST_GENERIC_AUDIO_TYPES: bytes = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Generic MP3</title>
+    <enclosure url="https://cdn.example/audio/generic.mp3"
+               type="application/octet-stream"/>
+  </item>
+  <item>
+    <title>Generic Ogg</title>
+    <enclosure url="https://cdn.example/audio/generic.ogg"
+               type="application/ogg"/>
+  </item>
+</channel></rss>
+"""
+
 FEED_URL = "https://pod.example/feed.xml"
 
 
@@ -78,6 +93,14 @@ def test_atom_enclosure_link_is_discovered() -> None:
     assert [item.url for item in items] == ["https://cdn.example/audio/atom1.mp3"]
     assert items[0].title == "Atom Episode"
     assert items[0].published_at == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+
+def test_generic_audio_content_types_are_discovered() -> None:
+    items = parse_podcast_feed(raw=PODCAST_GENERIC_AUDIO_TYPES, base_url=FEED_URL)
+    assert [item.url for item in items] == [
+        "https://cdn.example/audio/generic.mp3",
+        "https://cdn.example/audio/generic.ogg",
+    ]
 
 
 def test_malformed_xml_yields_no_items() -> None:

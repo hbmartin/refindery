@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from refindery.application.ports.clock import Clock
+from refindery.application.ports.content_extractor import FetchRoute
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.watch_source import WatchItem, WatchSource
@@ -292,6 +293,11 @@ class WatchService:
                         url=item.url,
                         title=item.title,
                         source=f"watch:{watch.kind}:{watch.id}",
+                        fetch_route=(
+                            FetchRoute.AUDIO
+                            if watch.kind is WatchKind.PODCAST
+                            else FetchRoute.AUTO
+                        ),
                     )
                 )
             except Exception:  # one bad item must not abort the poll

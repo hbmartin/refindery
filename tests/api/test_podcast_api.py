@@ -18,7 +18,8 @@ from tests.fakes.youtube import FakeTranscriber
 AUTH = {"Authorization": f"Bearer {TEST_TOKEN}"}
 
 FEED_URL = "https://pod.example/feed.xml"
-ENCLOSURE_URL = "https://cdn.example/audio/ep1.mp3"
+DIRECT_AUDIO_URL = "https://cdn.example/audio/direct.mp3"
+ENCLOSURE_URL = "https://cdn.example/download?id=ep1"
 TRANSCRIPT = "spoken words about the topic of the episode"
 
 PODCAST_RSS: bytes = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -27,7 +28,8 @@ PODCAST_RSS: bytes = b"""<?xml version="1.0" encoding="UTF-8"?>
   <item>
     <title>Episode One</title>
     <link>https://pod.example/episodes/1</link>
-    <enclosure url="https://cdn.example/audio/ep1.mp3" length="123" type="audio/mpeg"/>
+    <enclosure url="https://cdn.example/download?id=ep1"
+               length="123" type="audio/mpeg"/>
     <pubDate>Mon, 06 Sep 2021 16:45:00 GMT</pubDate>
   </item>
 </channel></rss>
@@ -52,7 +54,12 @@ def _feed_fetcher() -> FakeFetcher:
 @pytest.fixture
 async def harness(tmp_path):
     audio_fetcher = AudioTranscriptFetcher(
-        downloader=FakeFileDownloader({ENCLOSURE_URL: (b"ID3fake", "audio/mpeg")}),
+        downloader=FakeFileDownloader(
+            {
+                DIRECT_AUDIO_URL: (b"ID3direct", "audio/mpeg"),
+                ENCLOSURE_URL: (b"ID3episode", "audio/mpeg"),
+            }
+        ),
         transcriber=FakeTranscriber(TRANSCRIPT),
     )
     fetcher = RoutingFetcher(default=_feed_fetcher(), audio=audio_fetcher)
@@ -81,7 +88,9 @@ async def _wait_indexed(client, page_id: str) -> None:
 
 async def test_audio_url_indexes_transcript(harness):
     client, _container = harness
-    response = await client.post("/v1/pages", json={"url": ENCLOSURE_URL}, headers=AUTH)
+    response = await client.post(
+        "/v1/pages", json={"url": DIRECT_AUDIO_URL}, headers=AUTH
+    )
     assert response.status_code == 202
     page_id = response.json()["page_id"]
     await _wait_indexed(client, page_id)
@@ -89,7 +98,7 @@ async def test_audio_url_indexes_transcript(harness):
     page = await client.get(f"/v1/pages/{page_id}", headers=AUTH)
     body = page.json()
     assert body["body_text"] == TRANSCRIPT
-    assert body["canonical_url"] == ENCLOSURE_URL
+    assert body["canonical_url"] == DIRECT_AUDIO_URL
 
 
 async def test_podcast_watch_fans_out_episode_transcripts(harness):
@@ -119,7 +128,9 @@ async def test_podcast_watch_fans_out_episode_transcripts(harness):
 async def test_podcast_watch_rejects_direct_audio_url(harness):
     client, _container = harness
     response = await client.post(
-        "/v1/watches", json={"url": ENCLOSURE_URL, "kind": "podcast"}, headers=AUTH
+        "/v1/watches",
+        json={"url": DIRECT_AUDIO_URL, "kind": "podcast"},
+        headers=AUTH,
     )
     assert response.status_code == 422
     assert "audio file" in response.json()["detail"]

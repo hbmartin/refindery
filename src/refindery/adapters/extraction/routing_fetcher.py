@@ -2,12 +2,18 @@
 
 Playlist/channel URLs deliberately fall through to plain HTTP — feeding a
 listing page to caption fetch is nonsense; those belong to /v1/watches. The
-audio route matches by file extension, so podcast enclosures discovered by
-watches and audio URLs posted directly both resolve to transcripts.
+automatic audio route matches by file extension; podcast watches persist an
+explicit audio route so MIME-identified enclosures without extensions still
+resolve to transcripts.
 """
 
-from refindery.application.ports.content_extractor import Fetcher, FetchResult
+from refindery.application.ports.content_extractor import (
+    Fetcher,
+    FetchResult,
+    FetchRoute,
+)
 from refindery.domain.audio import is_audio_url
+from refindery.domain.errors import FetchFailedError
 from refindery.domain.youtube import is_youtube_video_url
 
 
@@ -32,3 +38,15 @@ class RoutingFetcher:
         if self._audio is not None and is_audio_url(url):
             return await self._audio.fetch(url)
         return await self._default.fetch(url)
+
+    async def fetch_routed(self, url: str, *, route: FetchRoute) -> FetchResult:
+        """Route a fetch explicitly when source metadata is authoritative."""
+        match route:
+            case FetchRoute.AUTO:
+                return await self.fetch(url)
+            case FetchRoute.AUDIO if self._audio is not None:
+                return await self._audio.fetch(url)
+            case FetchRoute.AUDIO:
+                raise FetchFailedError(
+                    url=url, detail="audio fetch route is unavailable"
+                )

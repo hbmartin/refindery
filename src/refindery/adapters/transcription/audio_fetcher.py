@@ -22,11 +22,8 @@ from refindery.adapters.transcription.envelope import (
 )
 from refindery.application.ports.content_extractor import FetchResult
 from refindery.application.ports.transcriber import Transcriber
+from refindery.domain.audio import is_audio_content_type
 from refindery.domain.errors import FetchFailedError
-
-_GENERIC_AUDIO_CONTENT_TYPES = frozenset(
-    {"application/octet-stream", "application/ogg"}
-)
 
 
 class FileDownloader(Protocol):
@@ -41,14 +38,6 @@ class FileDownloader(Protocol):
     ) -> FileFetchResult:
         """Download ``url`` to ``dest``; raises FetchFailedError on failure."""
         ...
-
-
-def is_audio_content_type(content_type: str) -> bool:
-    """Accept ``audio/*`` plus the generic types podcast CDNs actually send."""
-    return (
-        content_type.startswith("audio/")
-        or content_type in _GENERIC_AUDIO_CONTENT_TYPES
-    )
 
 
 class AudioTranscriptFetcher:

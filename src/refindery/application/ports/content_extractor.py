@@ -4,13 +4,21 @@
 an external input that must be validated (size caps, content type parsing).
 """
 
-from typing import Protocol
+from enum import StrEnum
+from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from refindery.domain.models import ExtractedContent
 
 MAX_FETCH_BYTES = 10_000_000
+
+
+class FetchRoute(StrEnum):
+    """Explicit fetcher selection persisted with deferred fetch jobs."""
+
+    AUTO = "auto"
+    AUDIO = "audio"
 
 
 class FetchResult(BaseModel):
@@ -44,6 +52,15 @@ class Fetcher(Protocol):
 
     async def fetch(self, url: str) -> FetchResult:
         """Fetch ``url``; raises on network errors and non-2xx statuses."""
+        ...
+
+
+@runtime_checkable
+class RoutedFetcher(Fetcher, Protocol):
+    """Fetcher with explicit adapter selection when URL shape is insufficient."""
+
+    async def fetch_routed(self, url: str, *, route: FetchRoute) -> FetchResult:
+        """Fetch ``url`` through the requested adapter route."""
         ...
 
 

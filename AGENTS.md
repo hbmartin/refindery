@@ -115,3 +115,6 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
 - On a shared SQLite connection, handle expected uniqueness conflicts with
   `ON CONFLICT DO NOTHING` instead of rolling back a transaction that may include
   another coroutine's pending work.
+- Persist explicit adapter-routing intent in durable fetch-job payloads when
+  source metadata, rather than URL shape, identifies the content; keep MIME
+  recognition shared between discovery and download validation.

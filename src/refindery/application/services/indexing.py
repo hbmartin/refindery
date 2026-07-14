@@ -19,14 +19,22 @@ from functools import partial
 
 from refindery.application.ports.chunker import Chunker
 from refindery.application.ports.clock import Clock
-from refindery.application.ports.content_extractor import Fetcher
+from refindery.application.ports.content_extractor import (
+    Fetcher,
+    FetchRoute,
+    RoutedFetcher,
+)
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.vector_store import ChunkPoint, VectorStore
 from refindery.application.services.extraction_router import ExtractionRouter
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.domain.content_hash import content_hash
-from refindery.domain.errors import PageHasNoBodyError, PageNotFoundError
+from refindery.domain.errors import (
+    FetchFailedError,
+    PageHasNoBodyError,
+    PageNotFoundError,
+)
 from refindery.domain.ids import ChunkId, PageId
 from refindery.domain.models import Job, JobKind, Page, PageStatus
 from refindery.domain.rollup import PoolingStrategy, Vector, page_vector
@@ -82,7 +90,18 @@ class IndexingService:
         """fetch_and_index job: resolve the body by fetching, then index."""
         page = await self._require_page(PageId(job.payload["page_id"]))
         if page.body_text is None:
-            result = await self._fetcher.fetch(page.original_url)
+            route = FetchRoute(job.payload.get("fetch_route", FetchRoute.AUTO))
+            if route is FetchRoute.AUTO:
+                result = await self._fetcher.fetch(page.original_url)
+            elif isinstance(self._fetcher, RoutedFetcher):
+                result = await self._fetcher.fetch_routed(
+                    page.original_url, route=route
+                )
+            else:
+                raise FetchFailedError(
+                    url=page.original_url,
+                    detail=f"fetch route {route.value!r} is unavailable",
+                )
             extracted = await self._router.extract(
                 content_type=result.content_type,
                 raw=result.body,

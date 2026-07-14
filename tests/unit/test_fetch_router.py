@@ -1,13 +1,17 @@
 """RoutingFetcher: videos to YouTube, audio to Whisper, the rest to default."""
 
+import pytest
+
 from refindery.adapters.extraction.routing_fetcher import RoutingFetcher
-from refindery.application.ports.content_extractor import FetchResult
+from refindery.application.ports.content_extractor import FetchResult, FetchRoute
+from refindery.domain.errors import FetchFailedError
 from tests.fakes.extraction import FakeFetcher
 
 VIDEO_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 PAGE_URL = "https://example.com/article"
 PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLabc"
 AUDIO_URL = "https://cdn.example/episodes/42.mp3"
+TYPED_AUDIO_URL = "https://cdn.example/download?id=42"
 
 
 def _result(url: str) -> FetchResult:
@@ -53,6 +57,22 @@ async def test_routes_audio_urls_to_audio_and_rest_to_default():
 
     assert audio.calls == [AUDIO_URL]
     assert default.calls == [PAGE_URL]
+
+
+async def test_explicit_audio_route_handles_url_without_extension() -> None:
+    audio = FakeFetcher({TYPED_AUDIO_URL: _result(TYPED_AUDIO_URL)})
+    router = RoutingFetcher(default=FakeFetcher(), audio=audio)
+
+    await router.fetch_routed(TYPED_AUDIO_URL, route=FetchRoute.AUDIO)
+
+    assert audio.calls == [TYPED_AUDIO_URL]
+
+
+async def test_explicit_audio_route_fails_when_audio_fetcher_is_unavailable() -> None:
+    router = RoutingFetcher(default=FakeFetcher())
+
+    with pytest.raises(FetchFailedError, match="audio fetch route is unavailable"):
+        await router.fetch_routed(TYPED_AUDIO_URL, route=FetchRoute.AUDIO)
 
 
 async def test_no_audio_fetcher_sends_audio_to_default():

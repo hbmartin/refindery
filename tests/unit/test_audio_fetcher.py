@@ -2,14 +2,12 @@
 
 import pytest
 
-from refindery.adapters.transcription.audio_fetcher import (
-    AudioTranscriptFetcher,
-    is_audio_content_type,
-)
+from refindery.adapters.transcription.audio_fetcher import AudioTranscriptFetcher
 from refindery.adapters.transcription.envelope import (
     AUDIO_TRANSCRIPT_CONTENT_TYPE,
     AudioTranscriptEnvelope,
 )
+from refindery.domain.audio import is_audio_content_type
 from refindery.domain.errors import FetchFailedError
 from tests.fakes.extraction import FakeFileDownloader
 from tests.fakes.youtube import FakeTranscriber
@@ -69,5 +67,6 @@ def test_audio_content_type_predicate():
     assert is_audio_content_type("audio/x-m4a")
     assert is_audio_content_type("application/octet-stream")
     assert is_audio_content_type("application/ogg")
+    assert is_audio_content_type(" Application/Ogg; charset=binary ")
     assert not is_audio_content_type("text/html")
     assert not is_audio_content_type("video/mp4")

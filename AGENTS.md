@@ -134,3 +134,6 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
   current extractor chain instead of replacing newer media or test adapters.
 - Run `uv run` validation commands sequentially; concurrent invocations can race
   while synchronizing the shared virtual environment and produce false failures.
+- Keep feed-level parsers as simple iteration and error-isolation shells; move
+  per-entry normalization into typed helpers so malformed entries stay isolated
+  without pushing the outer parser over the complexity threshold.

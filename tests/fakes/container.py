@@ -4,6 +4,9 @@ from pathlib import Path
 
 from refindery.adapters.chunking.chonkie_chunker import ChonkieChunker
 from refindery.adapters.clock import SystemClock
+from refindery.adapters.extraction.youtube_transcript_extractor import (
+    YoutubeTranscriptExtractor,
+)
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
 from refindery.adapters.observability.metrics_history import MetricsSnapshotter
@@ -122,7 +125,7 @@ def build_test_container(
     vector_store = LanceDbVectorStore(path=settings.lancedb.path)
     chunker = ChonkieChunker(target_tokens=64, overlap_tokens=8, hard_max_tokens=96)
     the_fetcher = fetcher or FakeFetcher()
-    router = ExtractionRouter([FakeHtmlExtractor()])
+    router = ExtractionRouter([FakeHtmlExtractor(), YoutubeTranscriptExtractor()])
     registry = ModelRegistry(
         store=store,
         vector_store=vector_store,

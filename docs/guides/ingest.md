@@ -21,6 +21,29 @@ The request carries the page body in one of three ways:
 `body_extracted` and `body_html` are mutually exclusive. URL-only ingestion
 enqueues a `FETCH_AND_INDEX` job instead of `INDEX_PAGE`.
 
+### YouTube URLs
+
+When a URL-only ingest targets a YouTube video (`youtube.com`, `youtu.be`,
+`youtube-nocookie.com`, and their subdomains), Refindery fetches the video's
+**captions/transcript** with `yt-dlp` instead of the watch-page HTML. It prefers
+manual captions in the configured languages, falls back to auto-generated
+captions, and — when the video has no captions at all — downloads the audio and
+transcribes it locally with Whisper (mlx-whisper on Apple Silicon,
+faster-whisper elsewhere). The video title becomes the page title.
+
+This needs the `youtube` extra (`uv sync --extra youtube`); the transcription
+fallback additionally needs `transcribe-mlx` (Apple Silicon) or `transcribe`
+(cross-platform, which needs `ffmpeg`). Without the `youtube` extra, YouTube URLs
+fall back to the normal HTML path. Configure via `REFINDERY_FETCH__YOUTUBE_*`:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `…__YOUTUBE_CAPTIONS` | `true` | Route YouTube URLs to yt-dlp. |
+| `…__YOUTUBE_CAPTION_LANGS` | `["en","en-US","en-GB"]` | Preferred caption languages. |
+| `…__YOUTUBE_ALLOW_AUTO_GENERATED` | `true` | Allow auto-generated (ASR) captions. |
+| `…__YOUTUBE_TRANSCRIBE_FALLBACK` | `true` | Transcribe audio when no captions exist. |
+| `…__YOUTUBE_WHISPER_MODEL` | `small` | Whisper model size (or a full HF repo id). |
+
 ## The ingest → index → enrich flow
 
 ```text

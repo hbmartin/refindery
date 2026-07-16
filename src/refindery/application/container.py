@@ -15,6 +15,13 @@ from refindery.adapters.cluster.engine import ProcessPoolClusterEngine
 from refindery.adapters.embedding.catsu_embedder import CatsuEmbedder
 from refindery.adapters.extraction.http_fetcher import HttpFetcher
 from refindery.adapters.extraction.pdf_pypdf import PypdfExtractor
+from refindery.adapters.extraction.youtube_fetcher import (
+    YoutubeCaptionFetcher,
+    YtDlpBackend,
+)
+from refindery.adapters.extraction.youtube_transcript_extractor import (
+    YoutubeTranscriptExtractor,
+)
 from refindery.adapters.extractors.chain import ChainExtractor
 from refindery.adapters.extractors.gazetteer import GazetteerExtractor
 from refindery.adapters.llm.openai_compat import OpenAiCompatClient
@@ -27,6 +34,8 @@ from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.resilience.circuit_breaker import BreakerConfig, BreakerRegistry
 from refindery.adapters.resilience.retry import RetryPolicy
 from refindery.adapters.resilience.wrappers import ResilientEmbedder, ResilientReranker
+from refindery.adapters.transcription.faster_whisper import FasterWhisperTranscriber
+from refindery.adapters.transcription.mlx_whisper import MlxWhisperTranscriber
 from refindery.application.ports.chunker import Chunker
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.content_extractor import ContentExtractor, Fetcher
@@ -36,6 +45,7 @@ from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.query_log import QueryLogSink
 from refindery.application.ports.reranker import Reranker
+from refindery.application.ports.transcriber import Transcriber
 from refindery.application.ports.vector_store import VectorStore
 from refindery.application.services.admin_eval import AdminEvalService
 from refindery.application.services.backfill import BackfillService
@@ -46,6 +56,7 @@ from refindery.application.services.compare_service import CompareService
 from refindery.application.services.entity_ingest import EntityIngestService
 from refindery.application.services.extraction_router import ExtractionRouter
 from refindery.application.services.feedback_service import FeedbackService
+from refindery.application.services.fetch_router import RoutingFetcher
 from refindery.application.services.forget_service import ForgetService
 from refindery.application.services.indexing import IndexingService
 from refindery.application.services.ingest import IngestService
@@ -377,7 +388,10 @@ def _build_reranker(settings: Settings) -> Reranker | None:
 
 
 def _build_extractors() -> list[ContentExtractor]:
-    extractors: list[ContentExtractor] = [PypdfExtractor()]
+    extractors: list[ContentExtractor] = [
+        PypdfExtractor(),
+        YoutubeTranscriptExtractor(),
+    ]
     try:
         from refindery.adapters.extraction.pulpie_html import (  # noqa: PLC0415 — lazy: requires the html extra
             PulpieHtmlExtractor,
@@ -387,6 +401,47 @@ def _build_extractors() -> list[ContentExtractor]:
     except ExtractionUnavailableError:
         pass  # html extra not installed; body_html ingest fails with install hint
     return extractors
+
+
+def _build_transcriber(settings: Settings) -> Transcriber | None:
+    """Select an audio transcriber (MLX on Apple Silicon, else faster-whisper).
+
+    Returns ``None`` when the fallback is disabled or no whisper extra is
+    installed — YouTube videos without captions then fail cleanly.
+    """
+    if not settings.fetch.youtube_transcribe_fallback:
+        return None
+    model = settings.fetch.youtube_whisper_model
+    try:
+        return MlxWhisperTranscriber(model=model)
+    except ExtractionUnavailableError:
+        pass  # not on Apple Silicon or transcribe-mlx not installed
+    try:
+        return FasterWhisperTranscriber(model=model)
+    except ExtractionUnavailableError:
+        return None  # transcribe extra not installed
+
+
+def _build_fetcher(settings: Settings) -> Fetcher:
+    """Wire the HTTP fetcher, routing YouTube URLs to yt-dlp when enabled."""
+    http = HttpFetcher(
+        timeout_s=settings.fetch.timeout_s, max_bytes=settings.fetch.max_bytes
+    )
+    if not settings.fetch.youtube_captions:
+        return http
+    try:
+        youtube = YoutubeCaptionFetcher(
+            langs=settings.fetch.youtube_caption_langs,
+            allow_auto=settings.fetch.youtube_allow_auto_generated,
+            transcribe_fallback=settings.fetch.youtube_transcribe_fallback,
+            timeout_s=settings.fetch.timeout_s,
+            backend=YtDlpBackend(),
+            transcriber=_build_transcriber(settings),
+        )
+    except ExtractionUnavailableError:
+        logger.info("youtube extra not installed; YouTube URLs use the HTML path")
+        return http
+    return RoutingFetcher(default=http, youtube=youtube)
 
 
 def build_container(settings: Settings) -> Container:
@@ -406,9 +461,7 @@ def build_container(settings: Settings) -> Container:
         overlap_tokens=settings.chunking.overlap_tokens,
         hard_max_tokens=settings.chunking.hard_max_tokens,
     )
-    fetcher = HttpFetcher(
-        timeout_s=settings.fetch.timeout_s, max_bytes=settings.fetch.max_bytes
-    )
+    fetcher = _build_fetcher(settings)
     router = ExtractionRouter(_build_extractors())
     registry = ModelRegistry(
         store=store,

@@ -161,6 +161,11 @@ class FetchSettings(BaseModel):
 
     timeout_s: float = Field(default=10.0, gt=0)
     max_bytes: int = Field(default=10_000_000, ge=1)
+    youtube_captions: bool = True
+    youtube_caption_langs: tuple[str, ...] = ("en", "en-US", "en-GB")
+    youtube_allow_auto_generated: bool = True
+    youtube_transcribe_fallback: bool = True
+    youtube_whisper_model: str = "small"
 
 
 class JobsSettings(BaseModel):

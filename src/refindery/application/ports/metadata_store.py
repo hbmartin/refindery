@@ -4,6 +4,7 @@ Grows in later milestones (entities, clusters, tombstones). Implementations
 must keep all SQL dialect-neutral outside the adapter.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -119,8 +120,13 @@ class MetadataStore(Protocol):
         body_text: str,
         content_hash: str,
         title: str | None,
+        metadata: Mapping[str, object] | None = None,
     ) -> None:
-        """Fill the body after a deferred fetch resolved it."""
+        """Fill the body after a deferred fetch resolved it.
+
+        ``metadata``, when given, is shallow-merged into the page's existing
+        metadata JSON (e.g. to persist section boundaries alongside the body).
+        """
         ...
 
     # -- chunks & page vectors ---------------------------------------------

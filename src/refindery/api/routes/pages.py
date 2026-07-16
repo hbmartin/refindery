@@ -313,6 +313,8 @@ async def get_page_chunks(
                 token_count=chunk.token_count,
                 char_start=chunk.char_start,
                 char_end=chunk.char_end,
+                section_title=chunk.section_title,
+                section_start_s=chunk.section_start_s,
             )
             for chunk in chunks
         ],

@@ -26,6 +26,8 @@ from refindery.adapters.observability.duckdb_sink import DuckDbSink
 from refindery.adapters.observability.metrics import jobs_lease_expired, queue_depth
 from refindery.adapters.observability.metrics_history import MetricsSnapshotter
 from refindery.adapters.observability.query_log import DuckDbQueryLog
+from refindery.adapters.podcast.extractor import PodcastTranscriptExtractor
+from refindery.adapters.podcast.producer import PodcastTranscriptProducer
 from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.resilience.circuit_breaker import BreakerConfig, BreakerRegistry
 from refindery.adapters.resilience.retry import RetryPolicy
@@ -45,6 +47,7 @@ from refindery.application.ports.embedder import Embedder
 from refindery.application.ports.entity_extractor import EntityExtractor
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
+from refindery.application.ports.podcast_producer import PodcastProducer
 from refindery.application.ports.query_log import QueryLogSink
 from refindery.application.ports.reranker import Reranker
 from refindery.application.ports.transcriber import Transcriber
@@ -460,6 +463,7 @@ def _build_extractors() -> list[ContentExtractor]:
         PypdfExtractor(),
         YoutubeTranscriptExtractor(),
         AudioTranscriptExtractor(),
+        PodcastTranscriptExtractor(),
     ]
     try:
         from refindery.adapters.extraction.pulpie_html import (  # noqa: PLC0415 — lazy: requires the html extra
@@ -498,6 +502,20 @@ def _build_audio(
         max_bytes=settings.fetch.audio_max_bytes,
     )
     return AudioTranscriptFetcher(downloader=downloader, transcriber=transcriber)
+
+
+def _build_podcast(settings: Settings, *, fetcher: Fetcher) -> PodcastProducer | None:
+    """Build published-transcript support while retaining audio fallback."""
+    if not settings.fetch.podcast_transcripts:
+        return None
+    try:
+        return PodcastTranscriptProducer(fetcher=fetcher)
+    except ExtractionUnavailableError:
+        logger.info(
+            "podcast extra not installed; podcast watches use audio transcription "
+            "when available (install the 'podcast' extra for published transcripts)"
+        )
+        return None
 
 
 def _build_youtube(
@@ -555,6 +573,7 @@ def build_container(settings: Settings) -> Container:
             default=http_fetcher, youtube=youtube_fetcher, audio=audio_fetcher
         )
     )
+    podcast_producer = _build_podcast(settings, fetcher=http_fetcher)
     router = ExtractionRouter(_build_extractors())
     registry = ModelRegistry(
         store=store,
@@ -572,6 +591,7 @@ def build_container(settings: Settings) -> Container:
         fetcher=fetcher,
         router=router,
         pooling=settings.indexing.page_vector_pooling,
+        podcast_producer=podcast_producer,
     )
     events = JobEventBus(
         queue_size=settings.events.queue_size,
@@ -702,7 +722,7 @@ def build_container(settings: Settings) -> Container:
             max_entries=settings.watch.youtube_max_entries,
             timeout_s=settings.fetch.youtube_timeout_s,
         )
-    if audio_fetcher is not None:
+    if audio_fetcher is not None or podcast_producer is not None:
         sources[WatchKind.PODCAST] = PodcastWatchSource(fetcher=fetcher)
     watches = WatchService(
         store=store,

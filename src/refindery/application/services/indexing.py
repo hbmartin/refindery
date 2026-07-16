@@ -16,17 +16,24 @@ import logging
 import uuid
 from dataclasses import replace
 from functools import partial
+from itertools import pairwise
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, HttpUrl, model_validator
 
 from refindery.application.ports.chunker import Chunker
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.content_extractor import (
     Fetcher,
+    FetchResult,
     FetchRoute,
     RoutedFetcher,
 )
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
+from refindery.application.ports.podcast_producer import PodcastProducer
 from refindery.application.ports.vector_store import ChunkPoint, VectorStore
+from refindery.application.services.chapter_chunking import chunk_with_sections
 from refindery.application.services.extraction_router import ExtractionRouter
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.domain.content_hash import content_hash
@@ -37,10 +44,109 @@ from refindery.domain.errors import (
 )
 from refindery.domain.ids import ChunkId, PageId
 from refindery.domain.job_keys import extract_entities_key
-from refindery.domain.models import Job, JobKind, Page, PageStatus
+from refindery.domain.models import Job, JobKind, Page, PageStatus, Section
 from refindery.domain.rollup import PoolingStrategy, Vector, page_vector
 
 logger = logging.getLogger(__name__)
+
+
+class _PersistedSection(BaseModel):
+    """Validated section hydrated from page metadata JSON."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    title: str | None = None
+    char_start: int = Field(ge=0)
+    char_end: int = Field(gt=0)
+    start_time_s: FiniteFloat | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _positive_width(self) -> Self:
+        if self.char_end <= self.char_start:
+            msg = "section char_end must be greater than char_start"
+            raise ValueError(msg)
+        return self
+
+    def to_domain(self) -> Section:
+        """Map validated persistence data to the domain type."""
+        return Section(
+            title=self.title,
+            char_start=self.char_start,
+            char_end=self.char_end,
+            start_time_s=self.start_time_s,
+        )
+
+
+class _SectionsMetadata(BaseModel):
+    """Validated section block within Page.metadata."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    sections: list[_PersistedSection]
+
+
+class _PodcastMetadata(BaseModel):
+    """Validated producer-routing block within Page.metadata."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    transcript_url: HttpUrl
+    transcript_type: str | None = None
+    chapters_url: HttpUrl | None = None
+    enclosure_url: HttpUrl | None = None
+    description: str | None = None
+
+
+def _sections_metadata(
+    sections: tuple[Section, ...] | None,
+) -> dict[str, object] | None:
+    """Serialize extracted section boundaries for durable page metadata."""
+    if not sections:
+        return None
+    return {
+        "sections": [
+            {
+                "title": section.title,
+                "char_start": section.char_start,
+                "char_end": section.char_end,
+                "start_time_s": section.start_time_s,
+            }
+            for section in sections
+        ]
+    }
+
+
+def _sections_from_metadata(
+    metadata: dict[str, object] | None, *, body_len: int | None = None
+) -> tuple[Section, ...] | None:
+    """Validate and hydrate section boundaries persisted in page metadata."""
+    if metadata is None or "sections" not in metadata:
+        return None
+    validated = _SectionsMetadata.model_validate(metadata)
+    sections = tuple(section.to_domain() for section in validated.sections)
+    if not sections:
+        return None
+    if body_len is not None:
+        tiled = (
+            sections[0].char_start == 0
+            and sections[-1].char_end == body_len
+            and all(
+                left.char_end == right.char_start for left, right in pairwise(sections)
+            )
+        )
+        if not tiled:
+            msg = "persisted sections must tile the complete page body"
+            raise ValueError(msg)
+    return sections
+
+
+def _podcast_from_metadata(
+    metadata: dict[str, object] | None,
+) -> _PodcastMetadata | None:
+    """Validate and hydrate optional podcast producer-routing metadata."""
+    if metadata is None or "podcast" not in metadata:
+        return None
+    return _PodcastMetadata.model_validate(metadata["podcast"])
 
 
 def deterministic_chunk_id(*, page_id: PageId, page_hash: str, ordinal: int) -> ChunkId:
@@ -65,6 +171,7 @@ class IndexingService:
         router: ExtractionRouter,
         queue: JobQueue | None = None,
         pooling: PoolingStrategy = PoolingStrategy.MEAN,
+        podcast_producer: PodcastProducer | None = None,
     ) -> None:
         self._store = store
         self._vector_store = vector_store
@@ -75,6 +182,7 @@ class IndexingService:
         self._router = router
         self._queue = queue
         self._pooling = pooling
+        self._podcast_producer = podcast_producer
 
     def set_queue(self, queue: JobQueue) -> None:
         """Attach the durable queue after construction (breaks wiring cycles)."""
@@ -92,17 +200,7 @@ class IndexingService:
         page = await self._require_page(PageId(job.payload["page_id"]))
         if page.body_text is None:
             route = FetchRoute(job.payload.get("fetch_route", FetchRoute.AUTO))
-            if route is FetchRoute.AUTO:
-                result = await self._fetcher.fetch(page.original_url)
-            elif isinstance(self._fetcher, RoutedFetcher):
-                result = await self._fetcher.fetch_routed(
-                    page.original_url, route=route
-                )
-            else:
-                raise FetchFailedError(
-                    url=page.original_url,
-                    detail=f"fetch route {route.value!r} is unavailable",
-                )
+            result = await self._fetch_body(page, route=route)
             extracted = await self._router.extract(
                 content_type=result.content_type,
                 raw=result.body,
@@ -113,12 +211,44 @@ class IndexingService:
                 body_text=extracted.body_text,
                 content_hash=content_hash(extracted.body_text),
                 title=page.title or extracted.title,
+                metadata=_sections_metadata(extracted.sections),
             )
             refreshed = await self._store.get_page(page.id)
             if refreshed is None:
                 raise PageNotFoundError(page.id)
             page = refreshed
         await self._index(page)
+
+    async def _fetch_body(self, page: Page, *, route: FetchRoute) -> FetchResult:
+        """Prefer a feed-published podcast transcript, then use normal routing."""
+        podcast = _podcast_from_metadata(page.metadata)
+        if self._podcast_producer is not None and podcast is not None:
+            try:
+                return await self._podcast_producer.build(
+                    episode_url=page.original_url,
+                    transcript_url=str(podcast.transcript_url),
+                    transcript_type=podcast.transcript_type,
+                    chapters_url=(
+                        None
+                        if podcast.chapters_url is None
+                        else str(podcast.chapters_url)
+                    ),
+                    description=podcast.description,
+                )
+            except Exception:  # noqa: BLE001 — audio is the deliberate fallback
+                logger.warning(
+                    "published podcast transcript failed for %s; falling back to audio",
+                    page.original_url,
+                    exc_info=True,
+                )
+        if route is FetchRoute.AUTO:
+            return await self._fetcher.fetch(page.original_url)
+        if isinstance(self._fetcher, RoutedFetcher):
+            return await self._fetcher.fetch_routed(page.original_url, route=route)
+        raise FetchFailedError(
+            url=page.original_url,
+            detail=f"fetch route {route.value!r} is unavailable",
+        )
 
     async def mark_page_dead(self, job: Job, error: str) -> None:
         """Dead-job callback: the page is excluded from search."""
@@ -167,7 +297,16 @@ class IndexingService:
         assert page.content_hash is not None  # noqa: S101
         loop = asyncio.get_running_loop()
         raw_chunks = await loop.run_in_executor(
-            None, partial(self._chunker.chunk, page_id=page.id, text=page.body_text)
+            None,
+            partial(
+                chunk_with_sections,
+                self._chunker,
+                page_id=page.id,
+                text=page.body_text,
+                sections=_sections_from_metadata(
+                    page.metadata, body_len=len(page.body_text)
+                ),
+            ),
         )
         chunks = [
             replace(

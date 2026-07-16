@@ -78,6 +78,23 @@ async def test_no_captions_falls_back_to_transcription():
     assert not transcriber.calls[0].exists()
 
 
+async def test_empty_captions_fall_back_to_transcription():
+    track = CaptionTrack(
+        language="en", is_automatic=False, fmt="json3", content='{"events": []}'
+    )
+    backend = FakeYoutubeBackend(
+        captions={VIDEO_URL: _probe(track)}, audio={VIDEO_URL: b"fake-audio"}
+    )
+    transcriber = FakeTranscriber("fallback words")
+
+    result = await _fetcher(backend, transcriber=transcriber).fetch(VIDEO_URL)
+
+    envelope = YoutubeTranscriptEnvelope.model_validate_json(result.body)
+    assert envelope.transcript == "fallback words"
+    assert envelope.source is TranscriptSource.TRANSCRIBED
+    assert len(transcriber.calls) == 1
+
+
 async def test_no_captions_and_no_transcriber_fails():
     backend = FakeYoutubeBackend(captions={VIDEO_URL: _probe(None)})
     with pytest.raises(FetchFailedError, match="transcription unavailable"):

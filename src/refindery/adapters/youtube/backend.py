@@ -12,7 +12,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from refindery.adapters.youtube.envelope import YOUTUBE_TRANSCRIPT_CONTENT_TYPE
 from refindery.domain.errors import ExtractionUnavailableError, FetchFailedError
@@ -51,7 +51,81 @@ class VideoCaptionsResult(BaseModel):
 
     video_id: str | None
     title: str | None
+    language: str | None = None
     track: CaptionTrack | None
+
+
+class _CaptionTrackInfo(BaseModel):
+    """Validated subset of one yt-dlp caption-track descriptor."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    ext: str | None = None
+    url: str | None = None
+
+
+class _RequestedDownloadInfo(BaseModel):
+    """Validated subset of one yt-dlp completed-download descriptor."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    filepath: str | None = None
+
+
+class _VideoInfo(BaseModel):
+    """Validated subset of a yt-dlp single-video result."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    id: str | None = None
+    title: str | None = None
+    language: str | None = None
+    subtitles: dict[str, list[_CaptionTrackInfo]] = Field(default_factory=dict)
+    automatic_captions: dict[str, list[_CaptionTrackInfo]] = Field(default_factory=dict)
+    requested_downloads: list[_RequestedDownloadInfo] = Field(default_factory=list)
+
+
+class _ListingEntryInfo(BaseModel):
+    """Validated subset of one yt-dlp flat-playlist entry."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    id: str | None = None
+    title: str | None = None
+    timestamp: int | float | None = None
+    release_timestamp: int | float | None = None
+
+
+class _ListingInfo(BaseModel):
+    """Validated subset of a yt-dlp playlist/channel result."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    id: str | None = None
+    title: str | None = None
+    timestamp: int | float | None = None
+    release_timestamp: int | float | None = None
+    entries: list[_ListingEntryInfo | None] | None = None
+
+
+def _validate_video_info(raw: object, *, url: str) -> _VideoInfo:
+    """Validate an untyped yt-dlp video result and map failures to the fetch port."""
+    try:
+        return _VideoInfo.model_validate(raw)
+    except ValidationError as exc:
+        raise FetchFailedError(
+            url=url, detail=f"invalid yt-dlp video result: {exc}"
+        ) from exc
+
+
+def _validate_listing_info(raw: object, *, url: str) -> _ListingInfo:
+    """Validate an untyped yt-dlp listing result and map failures to the fetch port."""
+    try:
+        return _ListingInfo.model_validate(raw)
+    except ValidationError as exc:
+        raise FetchFailedError(
+            url=url, detail=f"invalid yt-dlp listing result: {exc}"
+        ) from exc
 
 
 class YoutubeBackend(Protocol):
@@ -148,22 +222,34 @@ class YtDlpBackend:
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                info = _validate_video_info(
+                    ydl.extract_info(url, download=False), url=url
+                )
                 track = self._select_and_download_track(
                     ydl, info, langs=langs, allow_auto=allow_auto
                 )
         except Exception as exc:
             raise FetchFailedError(url=url, detail=repr(exc)) from exc
         return VideoCaptionsResult(
-            video_id=info.get("id"), title=info.get("title"), track=track
+            video_id=info.id,
+            title=info.title,
+            language=info.language,
+            track=track,
         )
 
     def _select_and_download_track(
-        self, ydl: object, info: dict, *, langs: tuple[str, ...], allow_auto: bool
+        self,
+        ydl: object,
+        info: _VideoInfo,
+        *,
+        langs: tuple[str, ...],
+        allow_auto: bool,
     ) -> CaptionTrack | None:
-        pools: list[tuple[dict, bool]] = [(info.get("subtitles") or {}, False)]
+        pools: list[tuple[dict[str, list[_CaptionTrackInfo]], bool]] = [
+            (info.subtitles, False)
+        ]
         if allow_auto:
-            pools.append((info.get("automatic_captions") or {}, True))
+            pools.append((info.automatic_captions, True))
         for pool, is_automatic in pools:
             for lang in _preferred_langs(list(pool), langs):
                 if (track := self._download_track(ydl, pool[lang])) is not None:
@@ -176,15 +262,15 @@ class YtDlpBackend:
         return None
 
     def _download_track(
-        self, ydl: object, formats: list[dict]
+        self, ydl: object, formats: list[_CaptionTrackInfo]
     ) -> tuple[Literal["json3", "vtt"], str] | None:
-        by_ext = {entry.get("ext"): entry for entry in formats if entry.get("url")}
+        by_ext = {entry.ext: entry for entry in formats if entry.url}
         fmts: tuple[Literal["json3", "vtt"], ...] = ("json3", "vtt")
         for fmt in fmts:
             if (entry := by_ext.get(fmt)) is None:
                 continue
             try:
-                content = ydl.urlopen(entry["url"]).read().decode("utf-8")  # ty: ignore[unresolved-attribute]  # pyrefly: ignore[missing-attribute]
+                content = ydl.urlopen(entry.url).read().decode("utf-8")  # ty: ignore[unresolved-attribute]  # pyrefly: ignore[missing-attribute]
             except Exception:  # noqa: BLE001 — try the next caption format
                 logger.warning("caption track download failed", exc_info=True)
                 continue
@@ -203,10 +289,35 @@ class YtDlpBackend:
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                path = Path(ydl.prepare_filename(info))
+                raw_info = ydl.extract_info(url, download=True)
+                info = _validate_video_info(raw_info, url=url)
+                requested_paths = [
+                    Path(download.filepath)
+                    for download in info.requested_downloads
+                    if download.filepath
+                ]
+                prepared_path = Path(ydl.prepare_filename(raw_info))
         except Exception as exc:
             raise FetchFailedError(url=url, detail=repr(exc)) from exc
+        path = next(
+            (candidate for candidate in requested_paths if candidate.is_file()),
+            prepared_path,
+        )
+        if (
+            not path.is_file()
+            and (
+                fallback := next(
+                    (
+                        candidate
+                        for candidate in sorted(dest_dir.iterdir())
+                        if candidate.is_file()
+                    ),
+                    None,
+                )
+            )
+            is not None
+        ):
+            path = fallback
         if not path.is_file():
             raise FetchFailedError(url=url, detail="audio download produced no file")
         return path
@@ -226,28 +337,43 @@ class YtDlpBackend:
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                info = _validate_listing_info(
+                    ydl.extract_info(url, download=False), url=url
+                )
         except Exception as exc:
             raise FetchFailedError(url=url, detail=repr(exc)) from exc
-        raw_entries = info.get("entries") or ([info] if info.get("id") else [])
+        raw_entries = info.entries or (
+            [
+                _ListingEntryInfo(
+                    id=info.id,
+                    title=info.title,
+                    timestamp=info.timestamp,
+                    release_timestamp=info.release_timestamp,
+                )
+            ]
+            if info.id
+            else []
+        )
         entries: list[YoutubeEntry] = []
         for raw in raw_entries:
-            video_id = raw.get("id")
+            if raw is None:
+                continue
+            video_id = raw.id
             if not isinstance(video_id, str) or not _VIDEO_ID.match(video_id):
                 continue  # channel-tab sub-playlists and other non-video rows
             entries.append(
                 YoutubeEntry(
                     video_id=video_id,
                     url=f"https://www.youtube.com/watch?v={video_id}",
-                    title=raw.get("title") or None,
+                    title=raw.title,
                     published_at=_entry_timestamp(raw),
                 )
             )
         return entries
 
 
-def _entry_timestamp(raw: dict) -> datetime | None:
-    timestamp = raw.get("timestamp") or raw.get("release_timestamp")
+def _entry_timestamp(raw: _ListingEntryInfo) -> datetime | None:
+    timestamp = raw.timestamp or raw.release_timestamp
     if not isinstance(timestamp, (int, float)):
         return None
     return datetime.fromtimestamp(timestamp, tz=UTC)

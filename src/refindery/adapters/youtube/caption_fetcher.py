@@ -61,20 +61,30 @@ class YoutubeCaptionFetcher:
                 if probe.track.fmt == "json3"
                 else transcript_from_vtt(probe.track.content)
             )
-            source = (
-                TranscriptSource.AUTO_CAPTIONS
-                if probe.track.is_automatic
-                else TranscriptSource.MANUAL_CAPTIONS
-            )
-            language = probe.track.language
-        elif self._transcribe_fallback and self._transcriber is not None:
-            transcript = await self._transcribe_audio(url)
+            if transcript.strip():
+                source = (
+                    TranscriptSource.AUTO_CAPTIONS
+                    if probe.track.is_automatic
+                    else TranscriptSource.MANUAL_CAPTIONS
+                )
+                return self._envelope_result(
+                    url=url,
+                    probe=probe,
+                    transcript=transcript,
+                    source=source,
+                    language=probe.track.language,
+                )
+        if self._transcribe_fallback and self._transcriber is not None:
+            transcript = await self._transcribe_audio(url, language=probe.language)
             source = TranscriptSource.TRANSCRIBED
-            language = None
+            language = probe.language
         else:
-            raise FetchFailedError(
-                url=url, detail="no captions available and transcription unavailable"
+            detail = (
+                "empty transcript"
+                if probe.track is not None
+                else "no captions available and transcription unavailable"
             )
+            raise FetchFailedError(url=url, detail=detail)
         if not transcript.strip():
             raise FetchFailedError(url=url, detail="empty transcript")
         return self._envelope_result(
@@ -85,7 +95,7 @@ class YoutubeCaptionFetcher:
             language=language,
         )
 
-    async def _transcribe_audio(self, url: str) -> str:
+    async def _transcribe_audio(self, url: str, *, language: str | None) -> str:
         assert self._transcriber is not None  # noqa: S101 — guarded by caller
         tmp_dir = await asyncio.to_thread(
             lambda: tempfile.mkdtemp(prefix="refindery-yt-")
@@ -94,7 +104,7 @@ class YoutubeCaptionFetcher:
             audio_path = await self._backend.download_audio(
                 url, dest_dir=Path(tmp_dir), timeout_s=self._timeout_s
             )
-            return await self._transcriber.transcribe(audio_path)
+            return await self._transcriber.transcribe(audio_path, language=language)
         finally:
             await asyncio.to_thread(shutil.rmtree, tmp_dir, ignore_errors=True)
 

@@ -64,57 +64,67 @@ def _namespaced_value(
     return raw_url, raw_type if isinstance(raw_type, str) else None
 
 
+def _resolved_namespaced_value(
+    entry: feedparser.FeedParserDict, key: str, base_url: str
+) -> tuple[str | None, str | None]:
+    raw_url, content_type = _namespaced_value(entry, key)
+    if not isinstance(raw_url, str) or not raw_url:
+        return None, content_type
+    return urljoin(base_url, raw_url), content_type
+
+
+def _entry_target(
+    entry: feedparser.FeedParserDict,
+    *,
+    enclosure: str | None,
+    transcript_url: str | None,
+) -> str | None:
+    if enclosure is not None:
+        return enclosure
+    episode_link = entry.get("link")
+    if transcript_url is not None and isinstance(episode_link, str):
+        return episode_link
+    return None
+
+
+def _watch_item(entry: feedparser.FeedParserDict, *, base_url: str) -> WatchItem | None:
+    enclosure = _audio_enclosure(entry)
+    transcript_url, transcript_type = _resolved_namespaced_value(
+        entry, "podcast_transcript", base_url
+    )
+    chapters_url, _ = _resolved_namespaced_value(entry, "podcast_chapters", base_url)
+    target = _entry_target(entry, enclosure=enclosure, transcript_url=transcript_url)
+    if target is None:
+        return None
+
+    title = entry.get("title")
+    summary = entry.get("summary")
+    return WatchItem(
+        url=urljoin(base_url, target),
+        title=title if isinstance(title, str) and title else None,
+        published_at=entry_published(entry),
+        enclosure_url=urljoin(base_url, enclosure) if enclosure is not None else None,
+        transcript_url=transcript_url,
+        transcript_type=transcript_type if transcript_url is not None else None,
+        chapters_url=chapters_url,
+        description=(
+            summary if transcript_url is not None and isinstance(summary, str) else None
+        ),
+    )
+
+
 def parse_podcast_feed(*, raw: bytes, base_url: str) -> list[WatchItem]:
     """Parse feed bytes into audio items; invalid entries are dropped, never fatal."""
     parsed = feedparser.parse(raw)
     items: list[WatchItem] = []
     for entry in parsed.entries:
-        enclosure = _audio_enclosure(entry)
-        transcript_raw, transcript_type = _namespaced_value(entry, "podcast_transcript")
-        transcript_url = (
-            urljoin(base_url, transcript_raw)
-            if isinstance(transcript_raw, str) and transcript_raw
-            else None
-        )
-        chapters_raw, _chapters_type = _namespaced_value(entry, "podcast_chapters")
-        chapters_url = (
-            urljoin(base_url, chapters_raw)
-            if isinstance(chapters_raw, str) and chapters_raw
-            else None
-        )
-        episode_link = entry.get("link")
-        target = enclosure or (
-            episode_link
-            if transcript_url is not None and isinstance(episode_link, str)
-            else None
-        )
-        if target is None:
-            continue
-        title = entry.get("title")
-        summary = entry.get("summary")
         try:
-            item = WatchItem(
-                url=urljoin(base_url, target),
-                title=title if isinstance(title, str) and title else None,
-                published_at=entry_published(entry),
-                enclosure_url=(
-                    urljoin(base_url, enclosure) if enclosure is not None else None
-                ),
-                transcript_url=transcript_url,
-                transcript_type=transcript_type if transcript_url is not None else None,
-                chapters_url=chapters_url,
-                description=(
-                    summary
-                    if transcript_url is not None and isinstance(summary, str)
-                    else None
-                ),
-            )
+            item = _watch_item(entry, base_url=base_url)
         except (ValidationError, ValueError):
-            logger.warning(
-                "dropping invalid podcast entry %r from %s", target, base_url
-            )
+            logger.warning("dropping invalid podcast entry from %s", base_url)
             continue
-        items.append(item)
+        if item is not None:
+            items.append(item)
     return items
 
 

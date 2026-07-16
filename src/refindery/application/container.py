@@ -52,7 +52,7 @@ from refindery.application.services.ingest import IngestService
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.application.services.search_service import SearchService
 from refindery.application.services.similarity_service import SimilarityService
-from refindery.config import RerankerKind, Settings, VectorStoreKind
+from refindery.config import PdfSettings, RerankerKind, Settings, VectorStoreKind
 from refindery.domain.canonical_url import CanonicalizationRules
 from refindery.domain.errors import ConfigurationError, ExtractionUnavailableError
 from refindery.domain.models import EmbeddingModel, JobKind, ModelStatus
@@ -376,8 +376,15 @@ def _build_reranker(settings: Settings) -> Reranker | None:
             raise ConfigurationError(msg)
 
 
-def _build_extractors() -> list[ContentExtractor]:
-    extractors: list[ContentExtractor] = [PypdfExtractor()]
+def _build_extractors(pdf: PdfSettings) -> list[ContentExtractor]:
+    extractors: list[ContentExtractor] = [
+        PypdfExtractor(
+            strip_repeated_lines=pdf.strip_repeated_lines,
+            repeated_line_ratio=pdf.repeated_line_ratio,
+            repeated_line_scan=pdf.repeated_line_scan,
+            min_pages_for_stripping=pdf.min_pages_for_stripping,
+        )
+    ]
     try:
         from refindery.adapters.extraction.pulpie_html import (  # noqa: PLC0415 — lazy: requires the html extra
             PulpieHtmlExtractor,
@@ -409,7 +416,7 @@ def build_container(settings: Settings) -> Container:
     fetcher = HttpFetcher(
         timeout_s=settings.fetch.timeout_s, max_bytes=settings.fetch.max_bytes
     )
-    router = ExtractionRouter(_build_extractors())
+    router = ExtractionRouter(_build_extractors(settings.pdf))
     registry = ModelRegistry(
         store=store,
         vector_store=vector_store,

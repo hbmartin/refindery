@@ -144,6 +144,21 @@ class ChunkingSettings(BaseModel):
     hard_max_tokens: int = Field(default=512, ge=1)
 
 
+class PdfSettings(BaseModel):
+    """PDF text-extraction tuning (pypdf extractor).
+
+    Running headers/footers and page-number lines otherwise repeat into every
+    chunk; ``strip_repeated_lines`` detects lines recurring in the top/bottom
+    ``repeated_line_scan`` lines of at least ``repeated_line_ratio`` of the
+    pages (only when a document has ``min_pages_for_stripping`` pages).
+    """
+
+    strip_repeated_lines: bool = True
+    repeated_line_ratio: float = Field(default=0.6, gt=0.0, le=1.0)
+    repeated_line_scan: int = Field(default=2, ge=1)
+    min_pages_for_stripping: int = Field(default=3, ge=1)
+
+
 class CanonicalizeSettings(BaseModel):
     """URL canonicalization overrides."""
 
@@ -281,6 +296,7 @@ class Settings(BaseSettings):
     embedder: EmbedderSettings = EmbedderSettings()
     reranker: RerankerSettings = RerankerSettings()
     chunking: ChunkingSettings = ChunkingSettings()
+    pdf: PdfSettings = PdfSettings()
     canonicalize: CanonicalizeSettings = CanonicalizeSettings()
     indexing: IndexingSettings = IndexingSettings()
     fetch: FetchSettings = FetchSettings()

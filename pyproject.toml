@@ -1,6 +1,6 @@
 [project]
 name = "refindery"
-version = "0.2.0"
+version = "0.3.0"
 description = "A local, single-machine retrieval engine over the web pages you read."
 readme = "README.md"
 requires-python = ">=3.13"

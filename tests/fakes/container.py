@@ -5,6 +5,7 @@ from pathlib import Path
 
 from refindery.adapters.chunking.chonkie_chunker import ChonkieChunker
 from refindery.adapters.clock import SystemClock
+from refindery.adapters.extraction.pdf_pypdf import PypdfExtractor
 from refindery.adapters.feeds.rss_feedparser import RssWatchSource
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
@@ -143,6 +144,7 @@ def build_test_container(
     router = ExtractionRouter(
         [
             FakeHtmlExtractor(),
+            PypdfExtractor(),
             YoutubeTranscriptExtractor(),
             AudioTranscriptExtractor(),
             PodcastTranscriptExtractor(),

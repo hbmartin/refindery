@@ -130,3 +130,7 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
 - Resolve YouTube transcripts and chapters in the shared video fetcher so direct
   URL submissions and watch-discovered video URLs use identical section-aware
   indexing behavior.
+- When rebasing extractor changes, add feature-specific configuration to the full
+  current extractor chain instead of replacing newer media or test adapters.
+- Run `uv run` validation commands sequentially; concurrent invocations can race
+  while synchronizing the shared virtual environment and produce false failures.

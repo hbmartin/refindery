@@ -68,7 +68,7 @@ from refindery.application.services.model_registry import ModelRegistry
 from refindery.application.services.search_service import SearchService
 from refindery.application.services.similarity_service import SimilarityService
 from refindery.application.services.watch_service import WatchService
-from refindery.config import RerankerKind, Settings, VectorStoreKind
+from refindery.config import PdfSettings, RerankerKind, Settings, VectorStoreKind
 from refindery.domain.canonical_url import CanonicalizationRules
 from refindery.domain.errors import ConfigurationError, ExtractionUnavailableError
 from refindery.domain.models import (
@@ -458,9 +458,14 @@ def _build_reranker(settings: Settings) -> Reranker | None:
             raise ConfigurationError(msg)
 
 
-def _build_extractors() -> list[ContentExtractor]:
+def _build_extractors(pdf: PdfSettings) -> list[ContentExtractor]:
     extractors: list[ContentExtractor] = [
-        PypdfExtractor(),
+        PypdfExtractor(
+            strip_repeated_lines=pdf.strip_repeated_lines,
+            repeated_line_ratio=pdf.repeated_line_ratio,
+            repeated_line_scan=pdf.repeated_line_scan,
+            min_pages_for_stripping=pdf.min_pages_for_stripping,
+        ),
         YoutubeTranscriptExtractor(),
         AudioTranscriptExtractor(),
         PodcastTranscriptExtractor(),
@@ -574,7 +579,7 @@ def build_container(settings: Settings) -> Container:
         )
     )
     podcast_producer = _build_podcast(settings, fetcher=http_fetcher)
-    router = ExtractionRouter(_build_extractors())
+    router = ExtractionRouter(_build_extractors(settings.pdf))
     registry = ModelRegistry(
         store=store,
         vector_store=vector_store,

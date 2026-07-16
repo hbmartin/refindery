@@ -17,6 +17,7 @@ from refindery.adapters.extraction.http_fetcher import HttpFetcher
 from refindery.adapters.extraction.pdf_pypdf import PypdfExtractor
 from refindery.adapters.extractors.chain import ChainExtractor
 from refindery.adapters.extractors.gazetteer import GazetteerExtractor
+from refindery.adapters.feeds.rss_feedparser import RssFeedParser
 from refindery.adapters.llm.openai_compat import OpenAiCompatClient
 from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
@@ -52,10 +53,11 @@ from refindery.application.services.ingest import IngestService
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.application.services.search_service import SearchService
 from refindery.application.services.similarity_service import SimilarityService
+from refindery.application.services.watch_service import WatchService
 from refindery.config import RerankerKind, Settings, VectorStoreKind
 from refindery.domain.canonical_url import CanonicalizationRules
 from refindery.domain.errors import ConfigurationError, ExtractionUnavailableError
-from refindery.domain.models import EmbeddingModel, JobKind, ModelStatus
+from refindery.domain.models import EmbeddingModel, JobKind, ModelStatus, WatchKind
 
 if TYPE_CHECKING:
     from refindery.adapters.embedding.surface_forms import Model2VecSurfaceEmbedder
@@ -92,6 +94,7 @@ class Container:
     compare: CompareService
     metrics_snapshotter: MetricsSnapshotter
     admin_eval: AdminEvalService
+    watches: WatchService
     reranker: Reranker | None = None
 
     async def startup(self) -> None:
@@ -330,6 +333,37 @@ def _register_lease_watchdog(
     )
 
 
+def _wire_watches(
+    *,
+    settings: Settings,
+    store: MetadataStore,
+    queue: HueyJobQueue,
+    clock: Clock,
+    fetcher: Fetcher,
+    ingest: IngestService,
+) -> WatchService:
+    watches = WatchService(
+        store=store,
+        queue=queue,
+        clock=clock,
+        fetcher=fetcher,
+        ingest=ingest,
+        parsers={WatchKind.RSS: RssFeedParser()},
+        settings=settings.watch,
+    )
+    queue.add_handler(JobKind.POLL_WATCH, watches.handle_poll_watch)
+    if settings.watch.poll_tick_enabled:
+        from huey import crontab  # noqa: PLC0415 — scheduling detail
+
+        async def _watch_tick() -> None:
+            await watches.tick()
+
+        queue.register_periodic(
+            name="watch_poll_tick", schedule=crontab(minute="*"), handler=_watch_tick
+        )
+    return watches
+
+
 def _build_surface_embedder(settings: Settings) -> "Model2VecSurfaceEmbedder | None":
     if settings.entity.surface_embedder == "none":
         return None
@@ -540,6 +574,14 @@ def build_container(settings: Settings) -> Container:
         clock=clock,
     )
     queue.add_handler(JobKind.EVAL_REPLAY, admin_eval.handle_job)
+    watches = _wire_watches(
+        settings=settings,
+        store=store,
+        queue=queue,
+        clock=clock,
+        fetcher=fetcher,
+        ingest=ingest,
+    )
 
     from huey import crontab  # noqa: PLC0415 — scheduling detail
 
@@ -599,5 +641,6 @@ def build_container(settings: Settings) -> Container:
         compare=compare,
         metrics_snapshotter=metrics_snapshotter,
         admin_eval=admin_eval,
+        watches=watches,
         reranker=reranker,
     )

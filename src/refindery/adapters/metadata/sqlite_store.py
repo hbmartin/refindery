@@ -33,6 +33,7 @@ from refindery.domain.ids import (
     EntityId,
     JobId,
     PageId,
+    WatchId,
 )
 from refindery.domain.models import (
     BlacklistKind,
@@ -54,6 +55,9 @@ from refindery.domain.models import (
     PageStatus,
     TombstoneStatus,
     VectorTombstone,
+    Watch,
+    WatchKind,
+    WatchStatus,
 )
 
 _PAGE_COLUMNS = (
@@ -63,6 +67,10 @@ _PAGE_COLUMNS = (
 _JOB_COLUMNS = (
     "id, kind, payload, status, idempotency_key, attempts, max_attempts, "
     "lease_until, last_error, created_at, updated_at"
+)
+_WATCH_COLUMNS = (
+    "id, kind, url, interval_hours, enabled, config, next_run_at, last_run_at, "
+    "last_status, last_error, last_item_count, created_at"
 )
 _SQLITE_VARIABLE_BATCH_SIZE = 999
 
@@ -107,6 +115,23 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         last_error=row["last_error"],
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _watch_from_row(row: sqlite3.Row) -> Watch:
+    return Watch(
+        id=WatchId(row["id"]),
+        kind=WatchKind(row["kind"]),
+        url=row["url"],
+        interval_hours=row["interval_hours"],
+        enabled=bool(row["enabled"]),
+        config=None if row["config"] is None else json.loads(row["config"]),
+        next_run_at=datetime.fromisoformat(row["next_run_at"]),
+        last_run_at=_dt(row["last_run_at"]),
+        last_status=WatchStatus(row["last_status"]),
+        last_error=row["last_error"],
+        last_item_count=row["last_item_count"],
+        created_at=datetime.fromisoformat(row["created_at"]),
     )
 
 
@@ -1670,3 +1695,93 @@ class SqliteMetadataStore(_EntityClusterMixin):
             if _domain_suffix_match(domain=domain, pattern=rule.pattern):
                 return rule
         return None
+
+    # -- watches ----------------------------------------------------------------
+
+    async def create_watch(self, watch: Watch) -> bool:
+        """Insert a watch; False when (kind, url) already exists."""
+        try:
+            await self.conn.execute(
+                f"INSERT INTO watches ({_WATCH_COLUMNS}) "  # noqa: S608
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    watch.id,
+                    watch.kind,
+                    watch.url,
+                    watch.interval_hours,
+                    1 if watch.enabled else 0,
+                    None if watch.config is None else json.dumps(watch.config),
+                    _ts(watch.next_run_at),
+                    _ts(watch.last_run_at),
+                    watch.last_status,
+                    watch.last_error,
+                    watch.last_item_count,
+                    _ts(watch.created_at),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            await self.conn.rollback()
+            return False
+        await self.conn.commit()
+        return True
+
+    async def get_watch(self, watch_id: WatchId) -> Watch | None:
+        """Fetch one watch."""
+        cursor = await self.conn.execute(
+            f"SELECT {_WATCH_COLUMNS} FROM watches WHERE id = ?",  # noqa: S608
+            (watch_id,),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else _watch_from_row(row)
+
+    async def list_watches(self) -> list[Watch]:
+        """List watches, newest first."""
+        cursor = await self.conn.execute(
+            f"SELECT {_WATCH_COLUMNS} FROM watches "  # noqa: S608
+            "ORDER BY created_at DESC"
+        )
+        return [_watch_from_row(row) for row in await cursor.fetchall()]
+
+    async def delete_watch(self, watch_id: WatchId) -> bool:
+        """Delete a watch; False when it did not exist."""
+        cursor = await self.conn.execute(
+            "DELETE FROM watches WHERE id = ?", (watch_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def list_due_watches(self, *, now: datetime) -> list[Watch]:
+        """Return enabled watches due at or before now, oldest first."""
+        cursor = await self.conn.execute(
+            f"SELECT {_WATCH_COLUMNS} FROM watches "  # noqa: S608
+            "WHERE enabled = 1 AND next_run_at <= ? ORDER BY next_run_at ASC",
+            (_ts(now),),
+        )
+        return [_watch_from_row(row) for row in await cursor.fetchall()]
+
+    async def mark_watch_run(
+        self, *, watch_id: WatchId, next_run_at: datetime, last_run_at: datetime
+    ) -> None:
+        """Advance a watch's schedule (called when a poll is enqueued)."""
+        await self.conn.execute(
+            "UPDATE watches SET next_run_at = ?, last_run_at = ? WHERE id = ?",
+            (_ts(next_run_at), _ts(last_run_at), watch_id),
+        )
+        await self.conn.commit()
+
+    async def record_watch_result(
+        self,
+        *,
+        watch_id: WatchId,
+        status: WatchStatus,
+        last_error: str | None,
+        item_count: int | None,
+        now: datetime,
+    ) -> None:
+        """Record the outcome of a completed poll (called by the handler)."""
+        await self.conn.execute(
+            "UPDATE watches SET last_status = ?, last_error = ?, "
+            "last_item_count = ?, last_run_at = ? WHERE id = ?",
+            (status, last_error, item_count, _ts(now), watch_id),
+        )
+        await self.conn.commit()

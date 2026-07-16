@@ -9,11 +9,18 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    field_validator,
     model_validator,
 )
 
 from refindery.application.services.similarity_service import Mediation
-from refindery.domain.models import BlacklistKind, JobStatus, PageStatus
+from refindery.domain.models import (
+    BlacklistKind,
+    JobStatus,
+    PageStatus,
+    WatchKind,
+    WatchStatus,
+)
 from refindery.domain.retrieval import RollupStrategy
 
 
@@ -398,6 +405,56 @@ class BlacklistResponse(BaseModel):
     """GET /v1/blacklist response."""
 
     entries: list[BlacklistEntry]
+
+
+class CreateWatchRequest(BaseModel):
+    """POST /v1/watches body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    kind: WatchKind = WatchKind.RSS
+    interval_hours: int | None = Field(default=None, ge=1)
+    enabled: bool = True
+    config: dict[str, JsonValue] | None = None
+
+    @field_validator("url")
+    @classmethod
+    def _http_url(cls, value: str) -> str:
+        value = value.strip()
+        if not value.startswith(("http://", "https://")):
+            msg = "url must be an absolute http(s) URL"
+            raise ValueError(msg)
+        return value
+
+
+class WatchResponse(BaseModel):
+    """One watch."""
+
+    id: str
+    kind: WatchKind
+    url: str
+    interval_hours: int
+    enabled: bool
+    next_run_at: datetime
+    last_run_at: datetime | None
+    last_status: WatchStatus
+    last_error: str | None
+    last_item_count: int | None
+    created_at: datetime
+
+
+class WatchListResponse(BaseModel):
+    """GET /v1/watches response."""
+
+    watches: list[WatchResponse]
+
+
+class RunWatchResponse(BaseModel):
+    """POST /v1/watches/{id}/run response."""
+
+    watch_id: str
+    job_id: str | None
 
 
 class ClusterSummary(BaseModel):

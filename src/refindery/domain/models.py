@@ -9,7 +9,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from refindery.domain.ids import BlacklistId, ChunkId, ClusterId, JobId, PageId
+from refindery.domain.ids import (
+    BlacklistId,
+    ChunkId,
+    ClusterId,
+    JobId,
+    PageId,
+    WatchId,
+)
 
 
 class PageStatus(StrEnum):
@@ -53,6 +60,21 @@ class JobKind(StrEnum):
     CANONICALIZE_ENTITIES = "canonicalize_entities"
     PURGE_VECTORS = "purge_vectors"
     EVAL_REPLAY = "eval_replay"
+    POLL_WATCH = "poll_watch"
+
+
+class WatchKind(StrEnum):
+    """Kind of source a watch polls. Each maps to one feed parser."""
+
+    RSS = "rss"
+
+
+class WatchStatus(StrEnum):
+    """Outcome of a watch's most recent poll."""
+
+    PENDING = "pending"
+    OK = "ok"
+    ERROR = "error"
 
 
 class BlacklistKind(StrEnum):
@@ -128,6 +150,30 @@ class Job:
     max_attempts: int = 5
     lease_until: datetime | None = None
     last_error: str | None = None
+
+
+@dataclass(slots=True)
+class Watch:
+    """A periodic source poll that fans discovered item URLs into ingest.
+
+    Fetches ``url`` every ``interval_hours``.
+    ``config`` is reserved per-type state (unused by RSS); it lets future
+    fan-out kinds (e.g. sitemap/index-page diff) persist state without a
+    schema change. ``last_*`` fields record the most recent poll outcome.
+    """
+
+    id: WatchId
+    kind: WatchKind
+    url: str
+    interval_hours: int
+    enabled: bool
+    config: dict[str, object] | None
+    next_run_at: datetime
+    last_run_at: datetime | None
+    last_status: WatchStatus
+    last_error: str | None
+    last_item_count: int | None
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)

@@ -22,6 +22,7 @@ from refindery.api.routes import (
     models,
     pages,
     search,
+    watches,
 )
 from refindery.application.container import Container, build_container
 from refindery.config import Settings
@@ -42,6 +43,7 @@ _AUTHENTICATED_ROUTERS = (
     models.router,
     compare.router,
     admin.router,
+    watches.router,
 )
 
 

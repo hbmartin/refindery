@@ -10,7 +10,7 @@ from typing import Protocol
 
 from refindery.domain.clustering import LineageRecord
 from refindery.domain.entities import Entity, EntityType
-from refindery.domain.ids import ChunkId, ClusterId, EntityId, JobId, PageId
+from refindery.domain.ids import ChunkId, ClusterId, EntityId, JobId, PageId, WatchId
 from refindery.domain.models import (
     BlacklistRule,
     Chunk,
@@ -30,6 +30,8 @@ from refindery.domain.models import (
     PageStatus,
     TombstoneStatus,
     VectorTombstone,
+    Watch,
+    WatchStatus,
 )
 
 
@@ -239,6 +241,46 @@ class MetadataStore(Protocol):
 
     async def list_expired_running_jobs(self, *, now: datetime) -> list[Job]:
         """Return running jobs whose lease expired (read-only; watchdog telemetry)."""
+        ...
+
+    # -- watches ----------------------------------------------------------------
+
+    async def create_watch(self, watch: Watch) -> bool:
+        """Insert a watch; False when (kind, url) already exists."""
+        ...
+
+    async def get_watch(self, watch_id: WatchId) -> Watch | None:
+        """Fetch one watch."""
+        ...
+
+    async def list_watches(self) -> list[Watch]:
+        """List watches, newest first."""
+        ...
+
+    async def delete_watch(self, watch_id: WatchId) -> bool:
+        """Delete a watch; False when it did not exist."""
+        ...
+
+    async def list_due_watches(self, *, now: datetime) -> list[Watch]:
+        """Return enabled watches due at or before now, oldest first."""
+        ...
+
+    async def mark_watch_run(
+        self, *, watch_id: WatchId, next_run_at: datetime, last_run_at: datetime
+    ) -> None:
+        """Advance a watch's schedule (called when a poll is enqueued)."""
+        ...
+
+    async def record_watch_result(
+        self,
+        *,
+        watch_id: WatchId,
+        status: WatchStatus,
+        last_error: str | None,
+        item_count: int | None,
+        now: datetime,
+    ) -> None:
+        """Record the outcome of a completed poll (called by the handler)."""
         ...
 
     # -- blacklist & forget -----------------------------------------------------

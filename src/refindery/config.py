@@ -172,6 +172,10 @@ class FetchSettings(BaseModel):
     ``audio_timeout_s`` instead of the in-memory ``max_bytes`` cap. The
     Whisper model is shared with ``youtube_whisper_model``; transcription
     requires the ``transcribe`` or ``transcribe-mlx`` extra + ffmpeg.
+
+    ``podcast_transcripts`` prefers Podcasting 2.0 published transcripts and
+    chapter metadata when a podcast watch discovers them. It requires the
+    ``podcast`` extra and falls back to the audio/Whisper path above.
     """
 
     timeout_s: float = Field(default=10.0, gt=0)
@@ -185,6 +189,7 @@ class FetchSettings(BaseModel):
     audio_transcripts: bool = True
     audio_max_bytes: int = Field(default=250_000_000, ge=1)
     audio_timeout_s: float = Field(default=300.0, gt=0)
+    podcast_transcripts: bool = True
 
 
 class WatchSettings(BaseModel):

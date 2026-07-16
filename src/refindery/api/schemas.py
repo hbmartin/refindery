@@ -154,6 +154,8 @@ class PageChunkResponse(BaseModel):
     token_count: int
     char_start: int
     char_end: int
+    section_title: str | None = None
+    section_start_s: float | None = None
 
 
 class PageChunksResponse(BaseModel):

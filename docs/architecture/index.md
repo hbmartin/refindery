@@ -61,7 +61,11 @@ Heavy optional adapters import lazily so the extras (`html`, `gliner`,
 1. embed the query with the active model;
 2. hybrid retrieval — dense + sparse arms in parallel
    (`adapters/vector/hybrid.py`), fused client-side with reciprocal-rank
-   fusion (`domain/retrieval.py`);
+   fusion (`domain/retrieval.py`). The sparse analyzers differ by backend
+   (Qdrant: fastembed BM25, bag-of-words; LanceDB: Lance-native FTS with
+   stemming, stop words retained, and quoted-phrase support), so switching
+   backends can change which pages surface — only the fusion formula is
+   backend-identical;
 3. optional cross-encoder rerank of the fused candidate set;
 4. rollup chunks → pages (max by default);
 5. hydrate pages, apply optional recency decay, pin exact URL/domain

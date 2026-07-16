@@ -7,7 +7,11 @@ import pytest
 
 from refindery.application.ports.watch_source import WatchItem
 from refindery.application.services.ingest import IngestRequest
-from refindery.application.services.watch_service import WatchPatch, WatchService
+from refindery.application.services.watch_service import (
+    WatchPatch,
+    WatchService,
+    _podcast_metadata,
+)
 from refindery.config import WatchSettings
 from refindery.domain.errors import (
     FetchFailedError,
@@ -299,3 +303,28 @@ async def test_run_now_enqueues_manual_job_and_advances(harness):
 def test_watch_settings_reject_unsafe_default_interval():
     with pytest.raises(ValueError):
         WatchSettings(default_interval_hours=MAX_WATCH_INTERVAL_HOURS + 1)
+
+
+def test_podcast_metadata_none_without_transcript():
+    item = WatchItem(url="https://pod.example/ep", enclosure_url="https://cdn/e.mp3")
+    assert _podcast_metadata(item) is None
+
+
+def test_podcast_metadata_carries_transcript_and_chapter_urls():
+    item = WatchItem(
+        url="https://pod.example/ep",
+        enclosure_url="https://cdn.example/e.mp3",
+        transcript_url="https://cdn.example/e.vtt",
+        transcript_type="text/vtt",
+        chapters_url="https://cdn.example/e.json",
+        description="00:00 Intro",
+    )
+    assert _podcast_metadata(item) == {
+        "podcast": {
+            "transcript_url": "https://cdn.example/e.vtt",
+            "transcript_type": "text/vtt",
+            "chapters_url": "https://cdn.example/e.json",
+            "enclosure_url": "https://cdn.example/e.mp3",
+            "description": "00:00 Intro",
+        }
+    }

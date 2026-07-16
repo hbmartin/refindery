@@ -5,7 +5,6 @@ surface in results — hydration drops them); vector deletion is asynchronous
 via tombstones with a verification sweep.
 """
 
-import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -19,6 +18,7 @@ from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.vector_store import VectorStore
 from refindery.domain.canonical_url import CanonicalizationRules, canonicalize
 from refindery.domain.ids import PageId, new_blacklist_id
+from refindery.domain.job_keys import purge_vectors_key
 from refindery.domain.models import (
     BlacklistKind,
     BlacklistRule,
@@ -109,11 +109,10 @@ class ForgetService:
         return host
 
     async def _enqueue_purge(self, page_ids: list[PageId]) -> None:
-        digest = hashlib.sha256(",".join(sorted(page_ids)).encode()).hexdigest()[:16]
         await self._queue.enqueue(
             kind=JobKind.PURGE_VECTORS,
             payload={"page_ids": json.dumps(page_ids)},
-            idempotency_key=f"purge:{digest}",
+            idempotency_key=purge_vectors_key(page_ids),
         )
 
     # -- job handlers -------------------------------------------------------------

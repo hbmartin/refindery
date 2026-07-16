@@ -28,6 +28,7 @@ from refindery.domain.errors import (
     WatchSourceUnavailableError,
 )
 from refindery.domain.ids import JobId, WatchId, new_watch_id
+from refindery.domain.job_keys import poll_watch_key
 from refindery.domain.models import (
     IngestBlacklisted,
     IngestQueued,
@@ -40,6 +41,22 @@ from refindery.domain.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _podcast_metadata(item: WatchItem) -> dict[str, object] | None:
+    """Build the durable producer-routing metadata for a podcast transcript."""
+    if item.transcript_url is None:
+        return None
+    podcast: dict[str, object] = {"transcript_url": item.transcript_url}
+    if item.transcript_type is not None:
+        podcast["transcript_type"] = item.transcript_type
+    if item.chapters_url is not None:
+        podcast["chapters_url"] = item.chapters_url
+    if item.enclosure_url is not None:
+        podcast["enclosure_url"] = item.enclosure_url
+    if item.description is not None:
+        podcast["description"] = item.description
+    return {"podcast": podcast}
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,7 +193,7 @@ class WatchService:
         job_id = await self._queue.enqueue(
             kind=JobKind.POLL_WATCH,
             payload={"watch_id": watch.id},
-            idempotency_key=f"poll_watch:{watch.id}:manual:{now.isoformat()}",
+            idempotency_key=poll_watch_key(watch_id=watch.id, run_at=now, manual=True),
         )
         await self._store.mark_watch_run(
             watch_id=watch.id,
@@ -199,8 +216,8 @@ class WatchService:
                 job_id = await self._queue.enqueue(
                     kind=JobKind.POLL_WATCH,
                     payload={"watch_id": watch.id},
-                    idempotency_key=(
-                        f"poll_watch:{watch.id}:{watch.next_run_at.isoformat()}"
+                    idempotency_key=poll_watch_key(
+                        watch_id=watch.id, run_at=watch.next_run_at
                     ),
                 )
                 await self._store.mark_watch_run(
@@ -298,6 +315,7 @@ class WatchService:
                             if watch.kind is WatchKind.PODCAST
                             else FetchRoute.AUTO
                         ),
+                        metadata=_podcast_metadata(item),
                     )
                 )
             except Exception:  # one bad item must not abort the poll

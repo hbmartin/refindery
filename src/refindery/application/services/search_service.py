@@ -35,6 +35,7 @@ from refindery.application.services.similarity_service import (
 from refindery.application.timing import StageTimer
 from refindery.domain.canonical_url import CanonicalizationRules, canonicalize
 from refindery.domain.errors import (
+    EntityNotFoundError,
     FeatureUnavailableError,
     NoActiveModelError,
     RefinderyError,
@@ -273,18 +274,22 @@ class SearchService:
         if filters.entity is not None:
             entity = await self._store.resolve_entity(filters.entity)
             if entity is None:
-                page_ids = frozenset()
-            else:
-                matches = await self._store.page_ids_for_entity(entity.id)
-                if len(matches) > _MAX_ENTITY_PAGES:
-                    raise EntityFilterTooBroadError(
-                        entity=filters.entity, matches=len(matches)
-                    )
-                page_ids = frozenset(matches)
+                # A bad reference must be distinguishable from "entity exists
+                # but matches nothing" — surface it instead of empty results.
+                raise EntityNotFoundError(filters.entity)
+            matches = await self._store.page_ids_for_entity(entity.id)
+            if len(matches) > _MAX_ENTITY_PAGES:
+                raise EntityFilterTooBroadError(
+                    entity=filters.entity, matches=len(matches)
+                )
+            page_ids = frozenset(matches)
         if filters.cluster_id is not None:
             cluster_id = ClusterId(filters.cluster_id)
             cluster = await self._store.get_cluster(cluster_id)
             if cluster is None or cluster.tombstoned_at is not None:
+                # Unlike entities, unknown/tombstoned clusters yield empty
+                # results on purpose: cluster ids churn across refits and a
+                # tombstoned id must stay addressable without erroring.
                 cluster_page_ids: frozenset[PageId] = frozenset()
             else:
                 members = await self._store.cluster_members(cluster_id)

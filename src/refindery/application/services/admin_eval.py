@@ -13,6 +13,7 @@ from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.services.compare_service import CompareService
 from refindery.application.services.eval_service import ArmSpec, EvalService
+from refindery.domain.job_keys import eval_replay_key
 from refindery.domain.models import EvalReplayResult, Job, JobKind
 
 
@@ -39,7 +40,7 @@ class AdminEvalService:
         job_id = await self._queue.enqueue(
             kind=JobKind.EVAL_REPLAY,
             payload={"request": json.dumps(payload)},
-            idempotency_key=f"eval-replay:{uuid7()}",
+            idempotency_key=eval_replay_key(uuid7()),
         )
         if job_id is None:  # UUID idempotency keys cannot collide in practice.
             raise RuntimeError("could not enqueue eval replay")  # noqa: TRY003

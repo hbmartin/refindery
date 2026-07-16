@@ -63,6 +63,28 @@ PODCAST_GENERIC_AUDIO_TYPES: bytes = b"""<?xml version="1.0" encoding="UTF-8"?>
 </channel></rss>
 """
 
+PODCASTING_20_RSS: bytes = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:podcast="https://podcastindex.org/namespace/1.0">
+  <channel>
+    <item>
+      <title>Chaptered Episode</title>
+      <link>https://pod.example/episodes/chaptered</link>
+      <description>00:00 Intro, 12:00 Deep dive</description>
+      <enclosure url="https://cdn.example/chaptered.mp3" type="audio/mpeg"/>
+      <podcast:transcript url="https://cdn.example/chaptered.vtt" type="text/vtt"/>
+      <podcast:chapters url="https://cdn.example/chaptered.json"
+                        type="application/json+chapters"/>
+    </item>
+    <item>
+      <title>Transcript Only</title>
+      <link>https://pod.example/episodes/transcript-only</link>
+      <podcast:transcript url="/transcripts/only.srt" type="application/x-subrip"/>
+    </item>
+  </channel>
+</rss>
+"""
+
 FEED_URL = "https://pod.example/feed.xml"
 
 
@@ -101,6 +123,25 @@ def test_generic_audio_content_types_are_discovered() -> None:
         "https://cdn.example/audio/generic.mp3",
         "https://cdn.example/audio/generic.ogg",
     ]
+
+
+def test_podcasting_20_metadata_is_carried_with_audio_fallback() -> None:
+    items = parse_podcast_feed(raw=PODCASTING_20_RSS, base_url=FEED_URL)
+    chaptered = items[0]
+    assert chaptered.url == "https://cdn.example/chaptered.mp3"
+    assert chaptered.enclosure_url == "https://cdn.example/chaptered.mp3"
+    assert chaptered.transcript_url == "https://cdn.example/chaptered.vtt"
+    assert chaptered.transcript_type == "text/vtt"
+    assert chaptered.chapters_url == "https://cdn.example/chaptered.json"
+    assert chaptered.description == "00:00 Intro, 12:00 Deep dive"
+
+
+def test_published_transcript_without_enclosure_uses_episode_url() -> None:
+    items = parse_podcast_feed(raw=PODCASTING_20_RSS, base_url=FEED_URL)
+    transcript_only = items[1]
+    assert transcript_only.url == "https://pod.example/episodes/transcript-only"
+    assert transcript_only.enclosure_url is None
+    assert transcript_only.transcript_url == "https://pod.example/transcripts/only.srt"
 
 
 def test_malformed_xml_yields_no_items() -> None:

@@ -25,6 +25,8 @@ from refindery.adapters.observability.duckdb_sink import DuckDbSink
 from refindery.adapters.observability.metrics import jobs_lease_expired, queue_depth
 from refindery.adapters.observability.metrics_history import MetricsSnapshotter
 from refindery.adapters.observability.query_log import DuckDbQueryLog
+from refindery.adapters.podcast.extractor import PodcastTranscriptExtractor
+from refindery.adapters.podcast.producer import PodcastTranscriptProducer
 from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.resilience.circuit_breaker import BreakerConfig, BreakerRegistry
 from refindery.adapters.resilience.retry import RetryPolicy
@@ -42,6 +44,7 @@ from refindery.application.ports.embedder import Embedder
 from refindery.application.ports.entity_extractor import EntityExtractor
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
+from refindery.application.ports.podcast_producer import PodcastProducer
 from refindery.application.ports.query_log import QueryLogSink
 from refindery.application.ports.reranker import Reranker
 from refindery.application.ports.vector_store import VectorStore
@@ -455,6 +458,7 @@ def _build_extractors() -> list[ContentExtractor]:
     extractors: list[ContentExtractor] = [
         PypdfExtractor(),
         YoutubeTranscriptExtractor(),
+        PodcastTranscriptExtractor(),
     ]
     try:
         from refindery.adapters.extraction.pulpie_html import (  # noqa: PLC0415 — lazy: requires the html extra
@@ -465,6 +469,20 @@ def _build_extractors() -> list[ContentExtractor]:
     except ExtractionUnavailableError:
         pass  # html extra not installed; body_html ingest fails with install hint
     return extractors
+
+
+def _build_podcast(settings: Settings, *, fetcher: Fetcher) -> PodcastProducer | None:
+    """Build the podcast transcript producer, or None if disabled/uninstalled."""
+    if not settings.fetch.podcast_transcripts:
+        return None
+    try:
+        return PodcastTranscriptProducer(fetcher=fetcher)
+    except ExtractionUnavailableError:
+        logger.info(
+            "podcast extra not installed; podcast episodes fetch as plain pages "
+            "(install the 'podcast' extra for chapter-aware transcripts)"
+        )
+        return None
 
 
 def _build_youtube(settings: Settings) -> tuple[Fetcher | None, YoutubeBackend | None]:
@@ -538,6 +556,7 @@ def build_container(settings: Settings) -> Container:
         fetcher=fetcher,
         router=router,
         pooling=settings.indexing.page_vector_pooling,
+        podcast_producer=_build_podcast(settings, fetcher=http_fetcher),
     )
     events = JobEventBus(
         queue_size=settings.events.queue_size,

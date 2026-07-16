@@ -165,6 +165,11 @@ class FetchSettings(BaseModel):
     whether auto-generated captions are acceptable, and whether captionless
     videos fall back to local Whisper transcription (``transcribe`` /
     ``transcribe-mlx`` extra + ffmpeg).
+
+    ``podcast_transcripts`` gates chapter-aware podcast ingestion: when a watched
+    RSS feed exposes a Podcasting 2.0 ``<podcast:transcript>``, the published
+    transcript is fetched and split along ``<podcast:chapters>`` / show-notes
+    chapters (requires the ``podcast`` extra).
     """
 
     timeout_s: float = Field(default=10.0, gt=0)
@@ -175,6 +180,7 @@ class FetchSettings(BaseModel):
     youtube_transcribe_fallback: bool = True
     youtube_whisper_model: str = "small"
     youtube_timeout_s: float = Field(default=60.0, gt=0)
+    podcast_transcripts: bool = True
 
 
 class WatchSettings(BaseModel):

@@ -1,0 +1,45 @@
+"""Extractor for the podcast transcript envelope (core, no optional deps)."""
+
+from pydantic import ValidationError
+
+from refindery.adapters.podcast.envelope import (
+    PODCAST_TRANSCRIPT_CONTENT_TYPE,
+    PodcastTranscriptEnvelope,
+)
+from refindery.domain.models import ExtractedContent, Section
+
+
+class PodcastTranscriptExtractor:
+    """Unwraps the envelope produced by the podcast producer."""
+
+    @property
+    def content_types(self) -> frozenset[str]:
+        """Handled content types."""
+        return frozenset({PODCAST_TRANSCRIPT_CONTENT_TYPE})
+
+    async def extract(
+        self,
+        *,
+        raw: bytes,
+        charset: str | None,  # noqa: ARG002 — port signature; the envelope is always UTF-8 JSON
+    ) -> ExtractedContent:
+        """Validate the envelope and surface transcript + chapter sections."""
+        try:
+            envelope = PodcastTranscriptEnvelope.model_validate_json(raw)
+        except ValidationError as exc:
+            msg = f"malformed podcast transcript envelope: {exc}"
+            raise ValueError(msg) from exc
+        sections = tuple(
+            Section(
+                title=section.title,
+                char_start=section.char_start,
+                char_end=section.char_end,
+                start_time_s=section.start_time_s,
+            )
+            for section in envelope.sections
+        )
+        return ExtractedContent(
+            body_text=envelope.transcript,
+            title=envelope.title,
+            sections=sections or None,
+        )

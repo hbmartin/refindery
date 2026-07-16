@@ -41,6 +41,27 @@ from refindery.domain.models import (
 logger = logging.getLogger(__name__)
 
 
+def _podcast_metadata(item: WatchItem) -> dict[str, object] | None:
+    """Ingest metadata block for a podcast episode exposing a transcript.
+
+    Consumed by ``IndexingService`` to route the episode through the podcast
+    producer (transcript + chapter-aware chunking). Returns None for ordinary
+    feed items so they follow the normal fetch/extract path.
+    """
+    if not item.transcript_url:
+        return None
+    podcast: dict[str, object] = {"transcript_url": item.transcript_url}
+    if item.transcript_type:
+        podcast["transcript_type"] = item.transcript_type
+    if item.chapters_url:
+        podcast["chapters_url"] = item.chapters_url
+    if item.enclosure_url:
+        podcast["enclosure_url"] = item.enclosure_url
+    if item.description:
+        podcast["description"] = item.description
+    return {"podcast": podcast}
+
+
 @dataclass(frozen=True, slots=True)
 class _UnsetValue:
     """Sentinel that distinguishes omitted PATCH fields from explicit nulls."""
@@ -292,6 +313,7 @@ class WatchService:
                         url=item.url,
                         title=item.title,
                         source=f"watch:{watch.kind}:{watch.id}",
+                        metadata=_podcast_metadata(item),
                     )
                 )
             except Exception:  # one bad item must not abort the poll

@@ -112,8 +112,28 @@ class Page:
 
 
 @dataclass(frozen=True, slots=True)
+class Section:
+    """A titled, contiguous span of a page's body text (e.g. a podcast chapter).
+
+    ``char_start``/``char_end`` index into the page body text; ``start_time_s``
+    is the source timestamp (podcast chapter start), when the section derives
+    from timed media.
+    """
+
+    title: str | None
+    char_start: int
+    char_end: int
+    start_time_s: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Chunk:
-    """A canonical, model-independent span of a page's body text."""
+    """A canonical, model-independent span of a page's body text.
+
+    ``section_title``/``section_start_s`` label the chunk with the chapter it
+    belongs to when the page was chunked along section boundaries; both are
+    ``None`` for ordinary flat chunking.
+    """
 
     id: ChunkId
     page_id: PageId
@@ -122,6 +142,8 @@ class Chunk:
     token_count: int
     char_start: int
     char_end: int
+    section_title: str | None = None
+    section_start_s: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,10 +312,16 @@ class VectorTombstone:
 
 @dataclass(frozen=True, slots=True)
 class ExtractedContent:
-    """Output of a content extractor: markdown body plus optional title."""
+    """Output of a content extractor: markdown body plus optional title.
+
+    ``sections`` carries structural boundaries (e.g. podcast chapters) discovered
+    during extraction; ``None`` means "no structure", and chunking falls back to
+    the flat sentence-based path.
+    """
 
     body_text: str
     title: str | None = None
+    sections: tuple[Section, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)

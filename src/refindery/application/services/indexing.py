@@ -19,16 +19,18 @@ from functools import partial
 
 from refindery.application.ports.chunker import Chunker
 from refindery.application.ports.clock import Clock
-from refindery.application.ports.content_extractor import Fetcher
+from refindery.application.ports.content_extractor import Fetcher, FetchResult
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
+from refindery.application.ports.podcast_producer import PodcastProducer
 from refindery.application.ports.vector_store import ChunkPoint, VectorStore
+from refindery.application.services.chapter_chunking import chunk_with_sections
 from refindery.application.services.extraction_router import ExtractionRouter
 from refindery.application.services.model_registry import ModelRegistry
 from refindery.domain.content_hash import content_hash
 from refindery.domain.errors import PageHasNoBodyError, PageNotFoundError
 from refindery.domain.ids import ChunkId, PageId
-from refindery.domain.models import Job, JobKind, Page, PageStatus
+from refindery.domain.models import Job, JobKind, Page, PageStatus, Section
 from refindery.domain.rollup import PoolingStrategy, Vector, page_vector
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,58 @@ def deterministic_chunk_id(*, page_id: PageId, page_hash: str, ordinal: int) -> 
     return ChunkId(
         str(uuid.uuid5(uuid.NAMESPACE_URL, f"{page_id}:{page_hash}:{ordinal}"))
     )
+
+
+def _sections_metadata(
+    sections: tuple[Section, ...] | None,
+) -> dict[str, object] | None:
+    """Serialize section boundaries for persistence in ``Page.metadata``."""
+    if not sections:
+        return None
+    return {
+        "sections": [
+            {
+                "title": s.title,
+                "char_start": s.char_start,
+                "char_end": s.char_end,
+                "start_time_s": s.start_time_s,
+            }
+            for s in sections
+        ]
+    }
+
+
+def _sections_from_metadata(
+    metadata: dict[str, object] | None,
+) -> tuple[Section, ...] | None:
+    """Rebuild section boundaries persisted by ``_sections_metadata``."""
+    if not metadata or not isinstance(raw := metadata.get("sections"), list):
+        return None
+    sections: list[Section] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        char_start = item.get("char_start")
+        char_end = item.get("char_end")
+        if not isinstance(char_start, int) or not isinstance(char_end, int):
+            continue
+        title = item.get("title")
+        start_time = item.get("start_time_s")
+        sections.append(
+            Section(
+                title=title if isinstance(title, str) else None,
+                char_start=char_start,
+                char_end=char_end,
+                start_time_s=(
+                    float(start_time) if isinstance(start_time, int | float) else None
+                ),
+            )
+        )
+    return tuple(sections) or None
+
+
+def _opt_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 class IndexingService:
@@ -56,6 +110,7 @@ class IndexingService:
         router: ExtractionRouter,
         queue: JobQueue | None = None,
         pooling: PoolingStrategy = PoolingStrategy.MEAN,
+        podcast_producer: PodcastProducer | None = None,
     ) -> None:
         self._store = store
         self._vector_store = vector_store
@@ -66,6 +121,7 @@ class IndexingService:
         self._router = router
         self._queue = queue
         self._pooling = pooling
+        self._podcast_producer = podcast_producer
 
     def set_queue(self, queue: JobQueue) -> None:
         """Attach the durable queue after construction (breaks wiring cycles)."""
@@ -82,7 +138,7 @@ class IndexingService:
         """fetch_and_index job: resolve the body by fetching, then index."""
         page = await self._require_page(PageId(job.payload["page_id"]))
         if page.body_text is None:
-            result = await self._fetcher.fetch(page.original_url)
+            result = await self._fetch_body(page)
             extracted = await self._router.extract(
                 content_type=result.content_type,
                 raw=result.body,
@@ -93,12 +149,33 @@ class IndexingService:
                 body_text=extracted.body_text,
                 content_hash=content_hash(extracted.body_text),
                 title=page.title or extracted.title,
+                metadata=_sections_metadata(extracted.sections),
             )
             refreshed = await self._store.get_page(page.id)
             if refreshed is None:
                 raise PageNotFoundError(page.id)
             page = refreshed
         await self._index(page)
+
+    async def _fetch_body(self, page: Page) -> FetchResult:
+        """Resolve the body, routing podcast episodes through the producer.
+
+        A ``podcast`` block in ``Page.metadata`` (planted by the RSS watch when
+        a feed exposes a ``<podcast:transcript>``) selects the producer; every
+        other page uses the generic fetcher.
+        """
+        podcast = (page.metadata or {}).get("podcast")
+        if self._podcast_producer is not None and isinstance(podcast, dict):
+            transcript_url = podcast.get("transcript_url")
+            if isinstance(transcript_url, str):
+                return await self._podcast_producer.build(
+                    episode_url=page.original_url,
+                    transcript_url=transcript_url,
+                    transcript_type=_opt_str(podcast.get("transcript_type")),
+                    chapters_url=_opt_str(podcast.get("chapters_url")),
+                    description=_opt_str(podcast.get("description")),
+                )
+        return await self._fetcher.fetch(page.original_url)
 
     async def mark_page_dead(self, job: Job, error: str) -> None:
         """Dead-job callback: the page is excluded from search."""
@@ -138,7 +215,14 @@ class IndexingService:
         assert page.content_hash is not None  # noqa: S101
         loop = asyncio.get_running_loop()
         raw_chunks = await loop.run_in_executor(
-            None, partial(self._chunker.chunk, page_id=page.id, text=page.body_text)
+            None,
+            partial(
+                chunk_with_sections,
+                self._chunker,
+                page_id=page.id,
+                text=page.body_text,
+                sections=_sections_from_metadata(page.metadata),
+            ),
         )
         chunks = [
             replace(

@@ -53,6 +53,30 @@ MALFORMED_LINK: bytes = b"""<rss><channel>
 </channel></rss>
 """
 
+PODCAST_FEED: bytes = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:podcast="https://podcastindex.org/namespace/1.0">
+  <channel>
+    <title>Test Pod</title>
+    <link>https://pod.example</link>
+    <item>
+      <title>Episode 42</title>
+      <link>https://pod.example/ep42</link>
+      <description>Show notes: 00:00 Intro, 12:00 Deep dive</description>
+      <enclosure url="https://cdn.example/ep42.mp3" type="audio/mpeg"/>
+      <podcast:transcript url="https://cdn.example/ep42.vtt" type="text/vtt"/>
+      <podcast:chapters url="https://cdn.example/ep42.chapters.json"
+                        type="application/json+chapters"/>
+    </item>
+    <item>
+      <title>Plain Episode</title>
+      <link>https://pod.example/ep-plain</link>
+      <enclosure url="https://cdn.example/plain.mp3" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>
+"""
+
 
 def test_rss2_items_parsed_with_titles_and_dates() -> None:
     items = parse_feed(raw=RSS2, base_url="https://blog.example/feed.xml")
@@ -100,6 +124,29 @@ def test_extreme_date_is_dropped_without_crashing() -> None:
         published_parsed=struct_time((10**100, 1, 1, 0, 0, 0, 0, 1, 0))
     )
     assert _entry_published(entry) is None
+
+
+def test_podcast_transcript_and_chapters_surfaced() -> None:
+    items = parse_feed(raw=PODCAST_FEED, base_url="https://pod.example/feed.xml")
+    episode = items[0]
+    assert episode.url == "https://pod.example/ep42"
+    assert episode.enclosure_url == "https://cdn.example/ep42.mp3"
+    assert episode.transcript_url == "https://cdn.example/ep42.vtt"
+    assert episode.transcript_type == "text/vtt"
+    assert episode.chapters_url == "https://cdn.example/ep42.chapters.json"
+    assert episode.description is not None
+    assert "Deep dive" in episode.description
+
+
+def test_non_podcast_episode_has_no_transcript_fields() -> None:
+    items = parse_feed(raw=PODCAST_FEED, base_url="https://pod.example/feed.xml")
+    plain = items[1]
+    assert plain.transcript_url is None
+    assert plain.chapters_url is None
+    # description is only carried when a transcript is present (kept lean).
+    assert plain.description is None
+    # audio enclosure is still surfaced.
+    assert plain.enclosure_url == "https://cdn.example/plain.mp3"
 
 
 async def test_source_fetches_and_parses_via_fetcher() -> None:

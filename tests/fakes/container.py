@@ -10,17 +10,20 @@ from refindery.adapters.metadata.sqlite_store import SqliteMetadataStore
 from refindery.adapters.observability.duckdb_sink import DuckDbSink
 from refindery.adapters.observability.metrics_history import MetricsSnapshotter
 from refindery.adapters.observability.query_log import DuckDbQueryLog
+from refindery.adapters.podcast.extractor import PodcastTranscriptExtractor
 from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.vector.lancedb_store import LanceDbVectorStore
 from refindery.adapters.youtube.extractor import YoutubeTranscriptExtractor
 from refindery.application.container import Container
 from refindery.application.job_events import JobEventBus
+from refindery.application.ports.chunker import Chunker
 from refindery.application.ports.clock import Clock
 from refindery.application.ports.cluster_engine import (
     ClusterFitResult,
     ClusterParams,
 )
 from refindery.application.ports.content_extractor import Fetcher
+from refindery.application.ports.podcast_producer import PodcastProducer
 from refindery.application.ports.watch_source import WatchSource
 from refindery.application.services.admin_eval import AdminEvalService
 from refindery.application.services.backfill import BackfillService
@@ -124,15 +127,25 @@ def build_test_container(
     cluster_engine=None,
     clock: Clock | None = None,
     watch_sources: Mapping[WatchKind, WatchSource] | None = None,
+    chunker: Chunker | None = None,
+    podcast_producer: PodcastProducer | None = None,
 ) -> Container:
     """Wire a container over real local adapters + fakes for external I/O."""
     settings = make_test_settings(tmp_path)
     clock = clock or SystemClock()
     store = SqliteMetadataStore(settings.sqlite.path)
     vector_store = LanceDbVectorStore(path=settings.lancedb.path)
-    chunker = ChonkieChunker(target_tokens=64, overlap_tokens=8, hard_max_tokens=96)
+    chunker = chunker or ChonkieChunker(
+        target_tokens=64, overlap_tokens=8, hard_max_tokens=96
+    )
     the_fetcher = fetcher or FakeFetcher()
-    router = ExtractionRouter([FakeHtmlExtractor(), YoutubeTranscriptExtractor()])
+    router = ExtractionRouter(
+        [
+            FakeHtmlExtractor(),
+            YoutubeTranscriptExtractor(),
+            PodcastTranscriptExtractor(),
+        ]
+    )
     registry = ModelRegistry(
         store=store,
         vector_store=vector_store,
@@ -148,6 +161,7 @@ def build_test_container(
         clock=clock,
         fetcher=the_fetcher,
         router=router,
+        podcast_producer=podcast_producer,
     )
     events = JobEventBus(
         queue_size=settings.events.queue_size,

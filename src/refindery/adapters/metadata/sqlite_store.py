@@ -8,6 +8,7 @@ SQLite-specific SQL is allowed here (and only here).
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from datetime import datetime
 from itertools import batched
 from pathlib import Path
@@ -153,6 +154,8 @@ def _chunk_from_row(row: sqlite3.Row) -> Chunk:
         token_count=row["token_count"],
         char_start=row["char_start"],
         char_end=row["char_end"],
+        section_title=row["section_title"],
+        section_start_s=row["section_start_s"],
     )
 
 
@@ -927,7 +930,8 @@ class _EntityClusterMixin:
     async def chunks_for_page(self, page_id: PageId) -> list[Chunk]:
         """All chunks of one page in ordinal order."""
         result = await self.conn.execute(
-            "SELECT id, page_id, ordinal, text, token_count, char_start, char_end "
+            "SELECT id, page_id, ordinal, text, token_count, char_start, char_end, "
+            "section_title, section_start_s "
             "FROM chunks WHERE page_id = ? ORDER BY ordinal",
             (page_id,),
         )
@@ -1195,20 +1199,39 @@ class SqliteMetadataStore(_EntityClusterMixin):
         body_text: str,
         content_hash: str,
         title: str | None,
+        metadata: Mapping[str, object] | None = None,
     ) -> None:
-        """Fill the body after a deferred fetch resolved it."""
-        if title is None:
-            await self.conn.execute(
-                "UPDATE pages SET body_text = ?, content_hash = ? WHERE id = ?",
-                (body_text, content_hash, page_id),
-            )
-        else:
-            await self.conn.execute(
-                "UPDATE pages SET body_text = ?, content_hash = ?, title = ? "
-                "WHERE id = ?",
-                (body_text, content_hash, title, page_id),
-            )
+        """Fill the body after a deferred fetch resolved it.
+
+        ``metadata`` is shallow-merged into the page's existing metadata JSON.
+        """
+        assignments = ["body_text = ?", "content_hash = ?"]
+        params: list[object] = [body_text, content_hash]
+        if title is not None:
+            assignments.append("title = ?")
+            params.append(title)
+        if metadata:
+            merged = await self._merged_page_metadata(page_id=page_id, extra=metadata)
+            assignments.append("metadata = ?")
+            params.append(json.dumps(merged))
+        params.append(page_id)
+        await self.conn.execute(
+            f"UPDATE pages SET {', '.join(assignments)} WHERE id = ?",  # noqa: S608 — fixed literal assignments, no user input
+            params,
+        )
         await self.conn.commit()
+
+    async def _merged_page_metadata(
+        self, *, page_id: PageId, extra: Mapping[str, object]
+    ) -> dict[str, object]:
+        cursor = await self.conn.execute(
+            "SELECT metadata FROM pages WHERE id = ?", (page_id,)
+        )
+        row = await cursor.fetchone()
+        existing: dict[str, object] = {}
+        if row is not None and row["metadata"] is not None:
+            existing = json.loads(row["metadata"])
+        return {**existing, **extra}
 
     # -- chunks & page vectors ---------------------------------------------
 
@@ -1217,8 +1240,9 @@ class SqliteMetadataStore(_EntityClusterMixin):
         await self.conn.execute("DELETE FROM chunks WHERE page_id = ?", (page_id,))
         await self.conn.executemany(
             "INSERT INTO chunks "
-            "(id, page_id, ordinal, text, token_count, char_start, char_end) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(id, page_id, ordinal, text, token_count, char_start, char_end, "
+            "section_title, section_start_s) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     c.id,
@@ -1228,6 +1252,8 @@ class SqliteMetadataStore(_EntityClusterMixin):
                     c.token_count,
                     c.char_start,
                     c.char_end,
+                    c.section_title,
+                    c.section_start_s,
                 )
                 for c in chunks
             ],
@@ -1246,7 +1272,8 @@ class SqliteMetadataStore(_EntityClusterMixin):
             placeholders = ",".join("?" for _ in id_batch)
             query = (  # safe: placeholders contain only generated question marks
                 f"SELECT id, page_id, ordinal, text, token_count, char_start, "  # noqa: S608
-                f"char_end FROM chunks WHERE id IN ({placeholders})"
+                f"char_end, section_title, section_start_s "
+                f"FROM chunks WHERE id IN ({placeholders})"
             )
             cursor = await self.conn.execute(query, id_batch)
             rows = await cursor.fetchall()

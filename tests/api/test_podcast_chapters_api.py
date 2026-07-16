@@ -60,7 +60,9 @@ class _FakePodcastProducer:
         )
 
 
-def _envelope(*, url: str, transcript_url: str, chaptered: bool) -> PodcastTranscriptEnvelope:
+def _envelope(
+    *, url: str, transcript_url: str, chaptered: bool
+) -> PodcastTranscriptEnvelope:
     sections: tuple[PodcastSection, ...] = ()
     if chaptered:
         sections = (
@@ -184,8 +186,7 @@ async def test_published_podcast_chapters_become_chunk_boundaries(harness):
         "Outro",
     }
     assert all(
-        chunk["text"].startswith(f"{chunk['section_title']}\n\n")
-        for chunk in chunks
+        chunk["text"].startswith(f"{chunk['section_title']}\n\n") for chunk in chunks
     )
     assert any(chunk["section_start_s"] == 60.0 for chunk in chunks)
 

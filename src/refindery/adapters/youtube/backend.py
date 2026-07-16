@@ -12,7 +12,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError
 
 from refindery.adapters.youtube.envelope import YOUTUBE_TRANSCRIPT_CONTENT_TYPE
 from refindery.domain.errors import ExtractionUnavailableError, FetchFailedError
@@ -44,6 +44,15 @@ class CaptionTrack(BaseModel):
     content: str
 
 
+class YoutubeChapter(BaseModel):
+    """One chapter reported by yt-dlp for a YouTube video."""
+
+    model_config = ConfigDict(frozen=True)
+
+    title: str | None
+    start_time_s: FiniteFloat = Field(ge=0)
+
+
 class VideoCaptionsResult(BaseModel):
     """Caption probe result; ``track`` is None when no acceptable track exists."""
 
@@ -53,6 +62,7 @@ class VideoCaptionsResult(BaseModel):
     title: str | None
     language: str | None = None
     track: CaptionTrack | None
+    chapters: tuple[YoutubeChapter, ...] = ()
 
 
 class _CaptionTrackInfo(BaseModel):
@@ -72,6 +82,15 @@ class _RequestedDownloadInfo(BaseModel):
     filepath: str | None = None
 
 
+class _ChapterInfo(BaseModel):
+    """Validated subset of one yt-dlp chapter descriptor."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    title: str | None = None
+    start_time: FiniteFloat = Field(ge=0)
+
+
 class _VideoInfo(BaseModel):
     """Validated subset of a yt-dlp single-video result."""
 
@@ -80,9 +99,10 @@ class _VideoInfo(BaseModel):
     id: str | None = None
     title: str | None = None
     language: str | None = None
-    subtitles: dict[str, list[_CaptionTrackInfo]] = Field(default_factory=dict)
-    automatic_captions: dict[str, list[_CaptionTrackInfo]] = Field(default_factory=dict)
-    requested_downloads: list[_RequestedDownloadInfo] = Field(default_factory=list)
+    subtitles: dict[str, list[_CaptionTrackInfo]] | None = None
+    automatic_captions: dict[str, list[_CaptionTrackInfo]] | None = None
+    requested_downloads: list[_RequestedDownloadInfo] | None = None
+    chapters: list[_ChapterInfo] | None = None
 
 
 class _ListingEntryInfo(BaseModel):
@@ -235,6 +255,7 @@ class YtDlpBackend:
             title=info.title,
             language=info.language,
             track=track,
+            chapters=_chapters(info),
         )
 
     def _select_and_download_track(
@@ -246,10 +267,10 @@ class YtDlpBackend:
         allow_auto: bool,
     ) -> CaptionTrack | None:
         pools: list[tuple[dict[str, list[_CaptionTrackInfo]], bool]] = [
-            (info.subtitles, False)
+            (info.subtitles or {}, False)
         ]
         if allow_auto:
-            pools.append((info.automatic_captions, True))
+            pools.append((info.automatic_captions or {}, True))
         for pool, is_automatic in pools:
             for lang in _preferred_langs(list(pool), langs):
                 if (track := self._download_track(ydl, pool[lang])) is not None:
@@ -293,7 +314,7 @@ class YtDlpBackend:
                 info = _validate_video_info(raw_info, url=url)
                 requested_paths = [
                     Path(download.filepath)
-                    for download in info.requested_downloads
+                    for download in info.requested_downloads or []
                     if download.filepath
                 ]
                 prepared_path = Path(ydl.prepare_filename(raw_info))
@@ -377,3 +398,19 @@ def _entry_timestamp(raw: _ListingEntryInfo) -> datetime | None:
     if not isinstance(timestamp, (int, float)):
         return None
     return datetime.fromtimestamp(timestamp, tz=UTC)
+
+
+def _chapters(info: _VideoInfo) -> tuple[YoutubeChapter, ...]:
+    """Normalize chapters into chronological, de-duplicated domain values."""
+    chapters: list[YoutubeChapter] = []
+    seen: set[tuple[float, str | None]] = set()
+    for chapter in sorted(info.chapters or [], key=lambda item: item.start_time):
+        title = (
+            chapter.title.strip() if chapter.title and chapter.title.strip() else None
+        )
+        key = (float(chapter.start_time), title)
+        if key in seen:
+            continue
+        seen.add(key)
+        chapters.append(YoutubeChapter(title=title, start_time_s=chapter.start_time))
+    return tuple(chapters)

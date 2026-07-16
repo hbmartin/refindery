@@ -4,13 +4,18 @@ import json
 
 import pytest
 
-from refindery.adapters.youtube.backend import CaptionTrack, VideoCaptionsResult
+from refindery.adapters.youtube.backend import (
+    CaptionTrack,
+    VideoCaptionsResult,
+    YoutubeChapter,
+)
 from refindery.adapters.youtube.caption_fetcher import YoutubeCaptionFetcher
 from refindery.adapters.youtube.envelope import (
     YOUTUBE_TRANSCRIPT_CONTENT_TYPE,
     TranscriptSource,
     YoutubeTranscriptEnvelope,
 )
+from refindery.application.ports.transcriber import TranscriptionSegment
 from refindery.domain.errors import FetchFailedError
 from tests.fakes.youtube import FakeTranscriber, FakeYoutubeBackend
 
@@ -20,8 +25,17 @@ WATCH_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 JSON3 = json.dumps({"events": [{"segs": [{"utf8": "caption text"}]}]})
 
 
-def _probe(track: CaptionTrack | None) -> VideoCaptionsResult:
-    return VideoCaptionsResult(video_id="dQw4w9WgXcQ", title="A Video", track=track)
+def _probe(
+    track: CaptionTrack | None,
+    *,
+    chapters: tuple[YoutubeChapter, ...] = (),
+) -> VideoCaptionsResult:
+    return VideoCaptionsResult(
+        video_id="dQw4w9WgXcQ",
+        title="A Video",
+        track=track,
+        chapters=chapters,
+    )
 
 
 def _fetcher(
@@ -64,6 +78,39 @@ async def test_auto_vtt_captions_parse_and_mark_source():
     assert envelope.source is TranscriptSource.AUTO_CAPTIONS
 
 
+async def test_caption_timing_maps_video_chapters_to_transcript_sections():
+    content = json.dumps(
+        {
+            "events": [
+                {"tStartMs": 0, "segs": [{"utf8": "intro words"}]},
+                {"tStartMs": 60_000, "segs": [{"utf8": "main words"}]},
+                {"tStartMs": 120_000, "segs": [{"utf8": "outro words"}]},
+            ]
+        }
+    )
+    track = CaptionTrack(
+        language="en", is_automatic=False, fmt="json3", content=content
+    )
+    chapters = (
+        YoutubeChapter(title="Intro", start_time_s=0.0),
+        YoutubeChapter(title="Main", start_time_s=60.0),
+        YoutubeChapter(title="Outro", start_time_s=120.0),
+    )
+    backend = FakeYoutubeBackend(captions={VIDEO_URL: _probe(track, chapters=chapters)})
+
+    result = await _fetcher(backend).fetch(VIDEO_URL)
+
+    envelope = YoutubeTranscriptEnvelope.model_validate_json(result.body)
+    assert [section.title for section in envelope.sections] == [
+        "Intro",
+        "Main",
+        "Outro",
+    ]
+    assert [section.char_start for section in envelope.sections] == [0, 12, 23]
+    assert envelope.sections[-1].char_end == len(envelope.transcript)
+    assert envelope.sections[1].start_time_s == 60.0
+
+
 async def test_no_captions_falls_back_to_transcription():
     backend = FakeYoutubeBackend(
         captions={VIDEO_URL: _probe(None)}, audio={VIDEO_URL: b"fake-audio"}
@@ -76,6 +123,40 @@ async def test_no_captions_falls_back_to_transcription():
     assert len(transcriber.calls) == 1
     # The temp audio dir is cleaned up after transcription.
     assert not transcriber.calls[0].exists()
+
+
+async def test_transcription_timing_maps_video_chapters_to_sections():
+    chapters = (
+        YoutubeChapter(title="Intro", start_time_s=0.0),
+        YoutubeChapter(title="Main", start_time_s=60.0),
+        YoutubeChapter(title="Outro", start_time_s=120.0),
+    )
+    backend = FakeYoutubeBackend(
+        captions={VIDEO_URL: _probe(None, chapters=chapters)},
+        audio={VIDEO_URL: b"fake-audio"},
+    )
+    transcriber = FakeTranscriber(
+        "intro words\nmain words\noutro words",
+        segments=(
+            TranscriptionSegment(text="intro words", start_time_s=0.0, end_time_s=30.0),
+            TranscriptionSegment(text="main words", start_time_s=60.0, end_time_s=90.0),
+            TranscriptionSegment(
+                text="outro words", start_time_s=120.0, end_time_s=150.0
+            ),
+        ),
+    )
+
+    result = await _fetcher(backend, transcriber=transcriber).fetch(VIDEO_URL)
+
+    envelope = YoutubeTranscriptEnvelope.model_validate_json(result.body)
+    assert envelope.source is TranscriptSource.TRANSCRIBED
+    assert [section.title for section in envelope.sections] == [
+        "Intro",
+        "Main",
+        "Outro",
+    ]
+    assert [section.char_start for section in envelope.sections] == [0, 12, 23]
+    assert envelope.sections[1].start_time_s == 60.0
 
 
 async def test_empty_captions_fall_back_to_transcription():

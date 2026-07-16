@@ -21,7 +21,7 @@ from refindery.adapters.transcription.envelope import (
     AudioTranscriptEnvelope,
 )
 from refindery.application.ports.content_extractor import FetchResult
-from refindery.application.ports.transcriber import Transcriber
+from refindery.application.ports.transcriber import Transcriber, TranscriptionResult
 from refindery.domain.audio import is_audio_content_type
 from refindery.domain.errors import FetchFailedError
 
@@ -49,13 +49,13 @@ class AudioTranscriptFetcher:
 
     async def fetch(self, url: str) -> FetchResult:
         """Download the audio, transcribe it, and wrap it in an envelope."""
-        downloaded, transcript = await self._transcribe(url)
-        if not transcript.strip():
+        downloaded, transcription = await self._transcribe(url)
+        if not transcription.text.strip():
             raise FetchFailedError(url=url, detail="empty transcript")
         envelope = AudioTranscriptEnvelope(
             title=None,
             language=None,
-            transcript=transcript,
+            transcript=transcription.text,
             source_url=downloaded.final_url,
         )
         return FetchResult(
@@ -67,7 +67,9 @@ class AudioTranscriptFetcher:
             body=envelope.model_dump_json().encode("utf-8"),
         )
 
-    async def _transcribe(self, url: str) -> tuple[FileFetchResult, str]:
+    async def _transcribe(
+        self, url: str
+    ) -> tuple[FileFetchResult, TranscriptionResult]:
         tmp_dir = await asyncio.to_thread(
             lambda: tempfile.mkdtemp(prefix="refindery-audio-")
         )
@@ -78,7 +80,7 @@ class AudioTranscriptFetcher:
                 dest=Path(tmp_dir) / f"audio{suffix}",
                 accept=is_audio_content_type,
             )
-            transcript = await self._transcriber.transcribe(downloaded.path)
-            return downloaded, transcript
+            transcription = await self._transcriber.transcribe(downloaded.path)
+            return downloaded, transcription
         finally:
             await asyncio.to_thread(shutil.rmtree, tmp_dir, ignore_errors=True)

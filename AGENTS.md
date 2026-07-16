@@ -124,3 +124,9 @@ Update AGENTS.md with notes, learnings, findings, or other useful patterns you h
 - Persist explicit adapter-routing intent in durable fetch-job payloads when
   source metadata, rather than URL shape, identifies the content; keep MIME
   recognition shared between discovery and download validation.
+- Preserve speech-to-text segment timestamps in the transcriber port; derive
+  transcript text and character offsets from the same normalized segment order
+  so native media chapters can be aligned without replacing the STT provider.
+- Resolve YouTube transcripts and chapters in the shared video fetcher so direct
+  URL submissions and watch-discovered video URLs use identical section-aware
+  indexing behavior.

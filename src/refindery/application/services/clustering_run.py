@@ -86,6 +86,7 @@ class ClusterRunService:
         canonicalization: CanonicalizationService,
         settings: ClusterSettings,
         labeler: OpenAiCompatClient | None = None,
+        graph_enabled: bool = False,
     ) -> None:
         self._store = store
         self._engine = engine
@@ -94,6 +95,7 @@ class ClusterRunService:
         self._canonicalization = canonicalization
         self._settings = settings
         self._labeler = labeler
+        self._graph_enabled = graph_enabled
         self._in_flight = False
 
     async def request_run(self, *, trigger: str) -> bool:
@@ -435,11 +437,15 @@ class ClusterRunService:
     async def handle_canonicalize_job(self, job: Job) -> None:
         """Periodic re-canonicalization chained after each run."""
         merges = await self._canonicalization.periodic_recanonicalize()
-        logger.info(
-            "canonicalization after run %s: %d merges",
-            job.payload.get("run_id", "?"),
-            merges,
-        )
+        run_id = job.payload.get("run_id", "?")
+        logger.info("canonicalization after run %s: %d merges", run_id, merges)
+        if self._graph_enabled:
+            # Merges change entity ids, so the derived graph must be rebuilt.
+            await self._queue.enqueue(
+                kind=JobKind.GRAPH_PROJECT,
+                payload={"mode": "rebuild", "run_id": run_id},
+                idempotency_key=f"graph-rebuild:{run_id}",
+            )
 
     async def close(self) -> None:
         """Release optional cluster resources."""

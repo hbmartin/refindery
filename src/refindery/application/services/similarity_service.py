@@ -6,6 +6,7 @@ from enum import StrEnum
 
 import numpy as np
 
+from refindery.application.ports.graph_store import GraphStore
 from refindery.application.ports.metadata_store import (
     ClusterMemberRow,
     MetadataStore,
@@ -19,11 +20,12 @@ from refindery.domain.rollup import Vector
 
 
 class Mediation(StrEnum):
-    """What mediates 'similar': vectors, cluster co-membership, or entities."""
+    """What mediates 'similar': vectors, cluster, entities, or the graph."""
 
     VECTOR = "vector"
     CLUSTER = "cluster"
     ENTITY = "entity"
+    GRAPH = "graph"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,8 +40,11 @@ class SimilarPage:
 class SimilarityService:
     """similar_to(page_id) and the suggestions block on /search."""
 
-    def __init__(self, *, store: MetadataStore) -> None:
+    def __init__(
+        self, *, store: MetadataStore, graph_store: GraphStore | None = None
+    ) -> None:
         self._store = store
+        self._graph_store = graph_store
 
     async def similar(
         self,
@@ -63,6 +68,8 @@ class SimilarityService:
                 return await self._by_cluster(page_id, k=k, skip=skip)
             case Mediation.ENTITY:
                 return await self._by_entity(page_id, k=k, skip=skip)
+            case Mediation.GRAPH:
+                return await self._by_graph(page_id, k=k, skip=skip)
 
     async def _vectors(self) -> dict[PageId, Vector]:
         if (model := await self._store.get_active_model()) is None:
@@ -194,3 +201,30 @@ class SimilarityService:
             )
         scored.sort(key=lambda s: (-s.score, s.page_id))
         return scored[:k]
+
+    async def _by_graph(
+        self, page_id: PageId, *, k: int, skip: frozenset[PageId]
+    ) -> list[SimilarPage]:
+        """Graph-backed shared-entity similarity; falls back to ``_by_entity``.
+
+        The graph computes the same IDF-weighted Jaccard as ``_by_entity`` via a
+        page->entity->page traversal. When no graph is configured, or it has no
+        result for this page yet, entity mediation answers instead so the
+        response never regresses below today's behavior.
+        """
+        if self._graph_store is not None:
+            shared = await self._graph_store.pages_sharing_entities(
+                page_id=page_id, limit=k + len(skip)
+            )
+            candidates = [s for s in shared if s.page_id not in skip]
+            indexed = await indexed_page_ids(
+                self._store, [s.page_id for s in candidates]
+            )
+            scored = [
+                SimilarPage(page_id=s.page_id, score=s.score, reason=Mediation.GRAPH)
+                for s in candidates
+                if s.page_id in indexed
+            ][:k]
+            if scored:
+                return scored
+        return await self._by_entity(page_id, k=k, skip=skip)

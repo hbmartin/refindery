@@ -43,6 +43,7 @@ from refindery.application.ports.clock import Clock
 from refindery.application.ports.content_extractor import ContentExtractor, Fetcher
 from refindery.application.ports.embedder import Embedder
 from refindery.application.ports.entity_extractor import EntityExtractor
+from refindery.application.ports.graph_store import GraphStore
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.ports.query_log import QueryLogSink
@@ -59,6 +60,7 @@ from refindery.application.services.entity_ingest import EntityIngestService
 from refindery.application.services.extraction_router import ExtractionRouter
 from refindery.application.services.feedback_service import FeedbackService
 from refindery.application.services.forget_service import ForgetService
+from refindery.application.services.graph_projection import GraphProjectionService
 from refindery.application.services.indexing import IndexingService
 from refindery.application.services.ingest import IngestService
 from refindery.application.services.model_registry import ModelRegistry
@@ -115,6 +117,7 @@ class Container:
     watches: WatchService
     events: JobEventBus
     reranker: Reranker | None = None
+    graph_store: GraphStore | None = None
 
     async def startup(self) -> None:
         """Connect, migrate, sync registry, recover jobs, start the consumer."""
@@ -138,6 +141,8 @@ class Container:
             )
         )
         await self.vector_store.ensure_schema(models)
+        if self.graph_store is not None:
+            await self.graph_store.ensure_schema()
         await self.queue.recover()
         try:
             await self.indexing.reconcile_entity_jobs()
@@ -169,6 +174,7 @@ class Container:
             ("entity_ingest", self.entity_ingest.close),
             ("clustering", self.clustering.close),
             ("vector_store", self.vector_store.close),
+            ("graph_store", self._close_graph_store),
             ("router", self._close_router),
             ("store", self.store.close),
             ("sink", self._close_sink),
@@ -180,6 +186,10 @@ class Container:
                     await result
             except Exception:
                 logger.exception("shutdown cleanup failed: %s", name)
+
+    async def _close_graph_store(self) -> None:
+        if self.graph_store is not None:
+            await self.graph_store.close()
 
     async def _close_router(self) -> None:
         self.router.close()
@@ -235,6 +245,45 @@ def _build_vector_store(settings: Settings) -> VectorStore:
         case _:
             msg = f"unknown vector store {settings.vector_store!r}"
             raise ConfigurationError(msg)
+
+
+def _build_graph_store(settings: Settings) -> GraphStore | None:
+    """Build the optional graph store; ``None`` when the graph is disabled."""
+    if not settings.graph_store.enabled:
+        return None
+    try:
+        from refindery.adapters.graph.kuzu_store import (  # noqa: PLC0415 — lazy: optional extra
+            KuzuGraphStore,
+        )
+    except ImportError as exc:
+        msg = "graph store enabled but 'kuzu' is not installed; add refindery[kuzu]"
+        raise ConfigurationError(msg) from exc
+    return KuzuGraphStore(path=settings.graph_store.path)
+
+
+def _wire_entities(
+    *,
+    queue: HueyJobQueue,
+    store: MetadataStore,
+    canonicalization: CanonicalizationService,
+    extractor: EntityExtractor,
+    graph_store: GraphStore | None,
+) -> EntityIngestService:
+    """Build entity ingest and (when enabled) the graph projection handler."""
+    entity_ingest = EntityIngestService(
+        store=store,
+        extractor=extractor,
+        canonicalization=canonicalization,
+        queue=queue,
+        graph_enabled=graph_store is not None,
+    )
+    queue.add_handler(
+        JobKind.EXTRACT_ENTITIES, entity_ingest.handle_extract_entities_job
+    )
+    if graph_store is not None:
+        projection = GraphProjectionService(store=store, graph_store=graph_store)
+        queue.add_handler(JobKind.GRAPH_PROJECT, projection.handle_job)
+    return entity_ingest
 
 
 def _build_extractor(
@@ -537,6 +586,7 @@ def build_container(settings: Settings) -> Container:
     )
     store = SqliteMetadataStore(settings.sqlite.path)
     vector_store = _build_vector_store(settings)
+    graph_store = _build_graph_store(settings)
     chunker = ChonkieChunker(
         target_tokens=settings.chunking.target_tokens,
         overlap_tokens=settings.chunking.overlap_tokens,
@@ -613,7 +663,7 @@ def build_container(settings: Settings) -> Container:
             policy=_retry_policy(settings),
             timeout_s=settings.resilience.rerank_timeout_s,
         )
-    similarity = SimilarityService(store=store)
+    similarity = SimilarityService(store=store, graph_store=graph_store)
     search = SearchService(
         store=store,
         vector_store=vector_store,
@@ -646,13 +696,12 @@ def build_container(settings: Settings) -> Container:
         cosine_threshold=settings.entity.cosine_threshold,
         edit_threshold=settings.entity.edit_distance_threshold,
     )
-    entity_ingest = EntityIngestService(
+    entity_ingest = _wire_entities(
+        queue=queue,
         store=store,
-        extractor=_build_extractor(settings, breakers=breakers),
         canonicalization=canonicalization,
-    )
-    queue.add_handler(
-        JobKind.EXTRACT_ENTITIES, entity_ingest.handle_extract_entities_job
+        extractor=_build_extractor(settings, breakers=breakers),
+        graph_store=graph_store,
     )
     clustering = ClusterRunService(
         store=store,
@@ -662,6 +711,7 @@ def build_container(settings: Settings) -> Container:
         canonicalization=canonicalization,
         settings=settings.cluster,
         labeler=_build_llm(settings, breakers=breakers),
+        graph_enabled=graph_store is not None,
     )
     idle_detector = IdleDetector(store=store, clock=clock, settings=settings.cluster)
     queue.add_handler(JobKind.CLUSTER, clustering.handle_cluster_job)
@@ -752,4 +802,5 @@ def build_container(settings: Settings) -> Container:
         watches=watches,
         events=events,
         reranker=reranker,
+        graph_store=graph_store,
     )

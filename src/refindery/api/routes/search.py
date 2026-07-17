@@ -221,7 +221,7 @@ async def similar_to(
     mediation: Annotated[Mediation, Query()] = Mediation.VECTOR,
     k: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> SimilarResponse:
-    """Rank similar pages using vector|cluster|entity mediation."""
+    """Rank similar pages using vector|cluster|entity|graph mediation."""
     try:
         similar = await container.similarity.similar(
             page_id=PageId(page_id), mediation=mediation, k=k

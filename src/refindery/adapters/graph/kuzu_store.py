@@ -11,6 +11,7 @@ corrupt the store, so exactly one adapter instance owns a given path.
 """
 
 import asyncio
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
@@ -21,18 +22,22 @@ from refindery.application.ports.graph_store import PageProjection, SharedEntity
 from refindery.domain.ids import PageId
 
 _SCHEMA: tuple[str, ...] = (
-    "CREATE NODE TABLE IF NOT EXISTS "
-    "Page(id STRING, domain STRING, first_seen_at STRING, PRIMARY KEY(id))",
+    "CREATE NODE TABLE IF NOT EXISTS Page("
+    "id STRING, domain STRING, first_seen_at STRING, total_idf DOUBLE, "
+    "PRIMARY KEY(id))",
     "CREATE NODE TABLE IF NOT EXISTS Entity("
     "id STRING, canonical_form STRING, type STRING, idf DOUBLE, PRIMARY KEY(id))",
     "CREATE REL TABLE IF NOT EXISTS MENTIONS(FROM Page TO Entity, count INT64)",
     "CREATE REL TABLE IF NOT EXISTS CO_OCCURS(FROM Entity TO Entity, count INT64)",
 )
 
+# ``total_idf`` (sum of the page's entity IDFs) is denormalized onto the Page
+# node so the Jaccard query is an O(1) property lookup per candidate instead of
+# a second MENTIONS traversal.
 _UPSERT_PAGE = (
     "MERGE (p:Page {id: $pid}) "
-    "ON CREATE SET p.domain = $domain, p.first_seen_at = $fs "
-    "ON MATCH SET p.domain = $domain, p.first_seen_at = $fs"
+    "ON CREATE SET p.domain = $domain, p.first_seen_at = $fs, p.total_idf = $total_idf "
+    "ON MATCH SET p.domain = $domain, p.first_seen_at = $fs, p.total_idf = $total_idf"
 )
 _CLEAR_PAGE_MENTIONS = "MATCH (p:Page {id: $pid})-[r:MENTIONS]->(:Entity) DELETE r"
 _UPSERT_ENTITY = (
@@ -57,18 +62,16 @@ _REBUILD_CO_OCCURS = (
     "WITH a, b, count(*) AS c "
     "MERGE (a)-[r:CO_OCCURS]->(b) ON CREATE SET r.count = c ON MATCH SET r.count = c"
 )
-# IDF-weighted Jaccard over entity sets, in-graph (mirrors _by_entity).
-# Aggregates are isolated in their own WITH before any arithmetic; Kùzu
-# rejects a sum() nested inside an expression in a grouping projection.
+# IDF-weighted Jaccard over entity sets, in-graph (mirrors _by_entity). Page
+# total IDFs come from the denormalized ``total_idf`` property (no per-candidate
+# traversal); ``shared`` is the only aggregate and is isolated in its own WITH
+# before any arithmetic (Kùzu rejects a sum() nested in a grouping projection).
 _PAGES_SHARING_ENTITIES = (
-    "MATCH (src:Page {id: $pid})-[:MENTIONS]->(se:Entity) "
-    "WITH src, sum(se.idf) AS src_total "
-    "MATCH (src)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(o:Page) "
+    "MATCH (src:Page {id: $pid})-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(o:Page) "
     "WHERE o.id <> $pid "
-    "WITH o, src_total, sum(e.idf) AS shared, count(e) AS shared_n "
-    "MATCH (o)-[:MENTIONS]->(oe:Entity) "
-    "WITH o.id AS page_id, src_total, shared, shared_n, sum(oe.idf) AS o_total "
-    "WITH page_id, shared, shared_n, (src_total + o_total - shared) AS denom "
+    "WITH src, o, sum(e.idf) AS shared, count(e) AS shared_n "
+    "WITH o.id AS page_id, shared, shared_n, "
+    "(src.total_idf + o.total_idf - shared) AS denom "
     "WHERE denom > 0 "
     "RETURN page_id, shared / denom AS score, shared_n AS shared "
     "ORDER BY score DESC, page_id "
@@ -88,19 +91,34 @@ class KuzuGraphStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._db: kuzu.Database | None = None
+        self._lock = threading.Lock()
 
     def _database(self) -> kuzu.Database:
+        # Double-checked locking: reads/writes run in asyncio.to_thread worker
+        # threads, so the first-use open must not race (two Database instances
+        # on one path corrupt the store).
         if self._db is None:
-            # Kùzu owns the path (it must not pre-exist as a directory); only
-            # the parent needs to exist.
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._db = kuzu.Database(str(self._path))
+            with self._lock:
+                if self._db is None:
+                    # Kùzu owns the path (it must not pre-exist as a directory);
+                    # only the parent needs to exist.
+                    self._path.parent.mkdir(parents=True, exist_ok=True)
+                    self._db = kuzu.Database(str(self._path))
         return self._db
 
     def _write(self, statements: Sequence[tuple[str, dict[str, object]]]) -> None:
+        # One transaction per call: atomic (a mid-batch failure rolls back) and
+        # a single fsync instead of one per auto-committed statement. Writes are
+        # serialized by the single-writer job queue, so no write-write contention.
         conn = kuzu.Connection(self._database())
-        for query, params in statements:
-            conn.execute(query, parameters=params)
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            for query, params in statements:
+                conn.execute(query, parameters=params)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
 
     def _read(self, query: str, params: dict[str, object]) -> list[list[object]]:
         conn = kuzu.Connection(self._database())
@@ -125,6 +143,7 @@ class KuzuGraphStore:
 
     async def project_page(self, projection: PageProjection) -> None:
         """Upsert a page, its entities, and a clean rewrite of its MENTIONS."""
+        total_idf = sum(ent.idf for ent in projection.entities)
         statements: list[tuple[str, dict[str, object]]] = [
             (
                 _UPSERT_PAGE,
@@ -132,6 +151,7 @@ class KuzuGraphStore:
                     "pid": projection.page_id,
                     "domain": projection.domain,
                     "fs": projection.first_seen_at.isoformat(),
+                    "total_idf": total_idf,
                 },
             ),
             (_CLEAR_PAGE_MENTIONS, {"pid": projection.page_id}),

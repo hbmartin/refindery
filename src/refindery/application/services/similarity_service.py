@@ -1,6 +1,7 @@
 """Page similarity: vector mediation now, cluster/entity mediations in M4."""
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -17,6 +18,8 @@ from refindery.domain.errors import NoActiveModelError, PageNotFoundError
 from refindery.domain.ids import ClusterId, PageId
 from refindery.domain.models import PageStatus
 from refindery.domain.rollup import Vector
+
+logger = logging.getLogger(__name__)
 
 
 class Mediation(StrEnum):
@@ -213,18 +216,30 @@ class SimilarityService:
         response never regresses below today's behavior.
         """
         if self._graph_store is not None:
-            shared = await self._graph_store.pages_sharing_entities(
-                page_id=page_id, limit=k + len(skip)
-            )
-            candidates = [s for s in shared if s.page_id not in skip]
-            indexed = await indexed_page_ids(
-                self._store, [s.page_id for s in candidates]
-            )
-            scored = [
-                SimilarPage(page_id=s.page_id, score=s.score, reason=Mediation.GRAPH)
-                for s in candidates
-                if s.page_id in indexed
-            ][:k]
-            if scored:
-                return scored
+            try:
+                scored = await self._graph_candidates(page_id, k=k, skip=skip)
+            except Exception:
+                # Contract: a failing graph store must never break search;
+                # degrade to entity mediation.
+                logger.exception(
+                    "graph similarity failed for %s; falling back to entity", page_id
+                )
+            else:
+                if scored:
+                    return scored
         return await self._by_entity(page_id, k=k, skip=skip)
+
+    async def _graph_candidates(
+        self, page_id: PageId, *, k: int, skip: frozenset[PageId]
+    ) -> list[SimilarPage]:
+        assert self._graph_store is not None  # noqa: S101 — guarded by caller
+        shared = await self._graph_store.pages_sharing_entities(
+            page_id=page_id, limit=k + len(skip)
+        )
+        candidates = [s for s in shared if s.page_id not in skip]
+        indexed = await indexed_page_ids(self._store, [s.page_id for s in candidates])
+        return [
+            SimilarPage(page_id=s.page_id, score=s.score, reason=Mediation.GRAPH)
+            for s in candidates
+            if s.page_id in indexed
+        ][:k]

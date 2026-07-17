@@ -92,6 +92,7 @@ class KuzuGraphStore:
         self._path = path
         self._db: kuzu.Database | None = None
         self._lock = threading.Lock()
+        self._rebuilding = False
 
     def _database(self) -> kuzu.Database:
         # Double-checked locking: reads/writes run in asyncio.to_thread worker
@@ -186,6 +187,14 @@ class KuzuGraphStore:
         """Drop all nodes and edges (start of a full rebuild)."""
         await asyncio.to_thread(self._write, [(stmt, {}) for stmt in _RESET])
 
+    async def begin_rebuild(self) -> None:
+        """Mark the graph unavailable so reads fall back until the rebuild ends."""
+        self._rebuilding = True
+
+    async def end_rebuild(self) -> None:
+        """Mark the graph available again after a rebuild finishes."""
+        self._rebuilding = False
+
     async def rebuild_co_occurrence(self) -> None:
         """Recompute CO_OCCURS from the current MENTIONS edges, in-graph."""
         await asyncio.to_thread(
@@ -196,6 +205,10 @@ class KuzuGraphStore:
         self, *, page_id: PageId, limit: int
     ) -> list[SharedEntityPage]:
         """Rank pages by IDF-weighted shared-entity Jaccard with ``page_id``."""
+        if self._rebuilding:
+            # A rebuild is in flight; an empty result routes the caller to the
+            # authoritative entity mediation rather than a half-built graph.
+            return []
         rows = await asyncio.to_thread(
             self._read, _PAGES_SHARING_ENTITIES, {"pid": page_id, "limit": limit}
         )

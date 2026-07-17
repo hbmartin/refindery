@@ -87,6 +87,14 @@ class GraphStore(Protocol):
         """Drop all nodes and edges (start of a full rebuild)."""
         ...
 
+    async def begin_rebuild(self) -> None:
+        """Mark the graph unavailable so reads fall back until the rebuild ends."""
+        ...
+
+    async def end_rebuild(self) -> None:
+        """Mark the graph available again after a rebuild finishes."""
+        ...
+
     async def rebuild_co_occurrence(self) -> None:
         """Recompute CO_OCCURS from the current MENTIONS edges, in-graph."""
         ...

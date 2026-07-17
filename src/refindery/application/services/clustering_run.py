@@ -440,8 +440,9 @@ class ClusterRunService:
         merges = await self._canonicalization.periodic_recanonicalize()
         run_id = job.payload.get("run_id", "?")
         logger.info("canonicalization after run %s: %d merges", run_id, merges)
-        if self._graph_enabled:
+        if self._graph_enabled and merges > 0:
             # Merges change entity ids, so the derived graph must be rebuilt.
+            # No merges means ids are unchanged, so a rebuild would be wasted work.
             await self._queue.enqueue(
                 kind=JobKind.GRAPH_PROJECT,
                 payload={"mode": "rebuild", "run_id": run_id},

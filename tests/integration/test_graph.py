@@ -1,6 +1,8 @@
 """Integration tests for the Kùzu graph store, projection, and mediation."""
 
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -25,11 +27,18 @@ from refindery.domain.models import (
 from tests.fakes.clock import FakeClock
 from tests.fakes.surface_embedder import FakeSurfaceEmbedder
 
-pytest.importorskip("kuzu")
-
-from refindery.adapters.graph.kuzu_store import KuzuGraphStore
+if TYPE_CHECKING:
+    from refindery.adapters.graph.kuzu_store import KuzuGraphStore
 
 NOW = datetime(2026, 7, 8, 12, 0, 0, tzinfo=UTC)
+
+
+def _kuzu_store(path: Path) -> "KuzuGraphStore":
+    """Construct a real Kùzu store, skipping the test when kuzu is absent."""
+    pytest.importorskip("kuzu")
+    from refindery.adapters.graph.kuzu_store import KuzuGraphStore
+
+    return KuzuGraphStore(path=path)
 
 
 def _indexed_page(url: str) -> Page:
@@ -88,8 +97,8 @@ def _graph_job(payload: dict[str, str]) -> Job:
     )
 
 
-async def test_kuzu_store_ranks_shared_entities_by_jaccard(tmp_path) -> None:
-    store = KuzuGraphStore(path=tmp_path / "graph")
+async def test_kuzu_store_ranks_shared_entities_by_jaccard(tmp_path: Path) -> None:
+    store = _kuzu_store(tmp_path / "graph")
     await store.ensure_schema()
     try:
         k = _ref("e_k", "Kubernetes", idf=2.0)
@@ -115,8 +124,8 @@ async def test_kuzu_store_ranks_shared_entities_by_jaccard(tmp_path) -> None:
         await store.close()
 
 
-async def test_kuzu_store_delete_reset_and_co_occurrence(tmp_path) -> None:
-    store = KuzuGraphStore(path=tmp_path / "graph")
+async def test_kuzu_store_delete_reset_and_co_occurrence(tmp_path: Path) -> None:
+    store = _kuzu_store(tmp_path / "graph")
     await store.ensure_schema()
     try:
         k = _ref("e_k", "Kubernetes", idf=2.0)
@@ -130,6 +139,24 @@ async def test_kuzu_store_delete_reset_and_co_occurrence(tmp_path) -> None:
         await store.reset()
         # p2 itself is gone after reset, so it has no entities to share.
         assert await store.pages_sharing_entities(page_id=PageId("p2"), limit=10) == []
+    finally:
+        await store.close()
+
+
+async def test_graph_unavailable_during_rebuild(tmp_path: Path) -> None:
+    store = _kuzu_store(tmp_path / "graph")
+    await store.ensure_schema()
+    try:
+        k = _ref("e_k", "Kubernetes", idf=2.0)
+        await store.project_page(_projection("p1", (k,)))
+        await store.project_page(_projection("p2", (k,)))
+
+        await store.begin_rebuild()
+        # Reads fall back (empty) while a rebuild is in flight.
+        assert await store.pages_sharing_entities(page_id=PageId("p1"), limit=10) == []
+
+        await store.end_rebuild()
+        assert await store.pages_sharing_entities(page_id=PageId("p1"), limit=10)
     finally:
         await store.close()
 
@@ -151,11 +178,11 @@ async def _seed_shared_entities(store: SqliteMetadataStore) -> tuple[Page, Page,
     return p1, p2, p3
 
 
-async def test_graph_projection_service_powers_graph_mediation(tmp_path) -> None:
+async def test_graph_projection_service_powers_graph_mediation(tmp_path: Path) -> None:
     store = SqliteMetadataStore(tmp_path / "meta.db")
     await store.connect()
     await store.migrate()
-    graph = KuzuGraphStore(path=tmp_path / "graph")
+    graph = _kuzu_store(tmp_path / "graph")
     await graph.ensure_schema()
     try:
         p1, p2, p3 = await _seed_shared_entities(store)
@@ -182,7 +209,7 @@ async def test_graph_projection_service_powers_graph_mediation(tmp_path) -> None
         await store.close()
 
 
-async def test_graph_mediation_falls_back_to_entity_when_absent(tmp_path) -> None:
+async def test_graph_mediation_falls_back_to_entity_when_absent(tmp_path: Path) -> None:
     store = SqliteMetadataStore(tmp_path / "meta.db")
     await store.connect()
     await store.migrate()

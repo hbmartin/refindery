@@ -35,18 +35,37 @@ class GraphProjectionService:
 
     async def handle_job(self, job: Job) -> None:
         """Project one page (``mode=page``) or rebuild all (``mode=rebuild``)."""
-        match job.payload.get("mode", "page"):
+        mode = job.payload.get("mode", "page")
+        match mode:
             case "rebuild":
                 await self._rebuild()
-            case _:
+            case "page":
                 await self._project_page(PageId(job.payload["page_id"]))
+            case _:
+                msg = f"unknown graph projection mode: {mode!r}"
+                raise ValueError(msg)
 
     async def _project_page(self, page_id: PageId) -> None:
         if (projection := await self._build_projection(page_id)) is not None:
             await self._graph_store.project_page(projection)
 
     async def _rebuild(self) -> None:
-        await self._graph_store.reset()
+        # Mark the graph unavailable for the whole rebuild so readers fall back
+        # to entity mediation instead of observing a half-built index. On
+        # failure, leave the graph empty (also a clean fallback), never partial.
+        await self._graph_store.begin_rebuild()
+        try:
+            await self._graph_store.reset()
+            projected = await self._reproject_all()
+            await self._graph_store.rebuild_co_occurrence()
+            logger.info("graph rebuild: projected %d pages", projected)
+        except Exception:
+            await self._graph_store.reset()
+            raise
+        finally:
+            await self._graph_store.end_rebuild()
+
+    async def _reproject_all(self) -> int:
         cursor: PageId | None = None
         projected = 0
         while page_ids := await self._store.pages_with_chunks_after(
@@ -57,8 +76,7 @@ class GraphProjectionService:
                     await self._graph_store.project_page(proj)
                     projected += 1
             cursor = page_ids[-1]
-        await self._graph_store.rebuild_co_occurrence()
-        logger.info("graph rebuild: projected %d pages", projected)
+        return projected
 
     async def _build_projection(self, page_id: PageId) -> PageProjection | None:
         page = await self._store.get_page(page_id)

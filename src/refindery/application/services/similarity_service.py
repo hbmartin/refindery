@@ -21,6 +21,10 @@ from refindery.domain.rollup import Vector
 
 logger = logging.getLogger(__name__)
 
+# Graph candidates are fetched at this multiple of k so that dropping skip-set
+# and non-indexed rows still leaves enough to fill k results.
+_GRAPH_OVERFETCH = 4
+
 
 class Mediation(StrEnum):
     """What mediates 'similar': vectors, cluster, entities, or the graph."""
@@ -233,8 +237,11 @@ class SimilarityService:
         self, page_id: PageId, *, k: int, skip: frozenset[PageId]
     ) -> list[SimilarPage]:
         assert self._graph_store is not None  # noqa: S101 — guarded by caller
+        # Over-fetch: skip-set members and any non-indexed rows are dropped
+        # below, so fetching exactly k would underfill the result. The graph
+        # returns fewer only when fewer pages genuinely share entities.
         shared = await self._graph_store.pages_sharing_entities(
-            page_id=page_id, limit=k + len(skip)
+            page_id=page_id, limit=(k + len(skip)) * _GRAPH_OVERFETCH
         )
         candidates = [s for s in shared if s.page_id not in skip]
         indexed = await indexed_page_ids(self._store, [s.page_id for s in candidates])

@@ -98,6 +98,13 @@ class LanceDbSettings(BaseModel):
     path: Path = Path("data/lancedb")
 
 
+class GraphStoreSettings(BaseModel):
+    """Kùzu graph store settings (opt-in; the graph is a derived index)."""
+
+    enabled: bool = False
+    path: Path = Path("data/kuzu")
+
+
 class SqliteSettings(BaseModel):
     """SQLite metadata store settings."""
 
@@ -339,6 +346,7 @@ class Settings(BaseSettings):
     bind_host: str = "127.0.0.1"
     bind_port: int = 8000
     vector_store: VectorStoreKind = VectorStoreKind.QDRANT
+    graph_store: GraphStoreSettings = GraphStoreSettings()
 
     qdrant: QdrantSettings = QdrantSettings()
     lancedb: LanceDbSettings = LanceDbSettings()

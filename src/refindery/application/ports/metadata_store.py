@@ -403,6 +403,10 @@ class MetadataStore(Protocol):
         """Entities mentioned on a page."""
         ...
 
+    async def mention_counts_for_page(self, page_id: PageId) -> dict[EntityId, int]:
+        """Per-entity mention counts on a page (for graph MENTIONS edges)."""
+        ...
+
     async def entity_blocks_with_duplicates(
         self,
     ) -> list[tuple[EntityType, str, list[EntityId]]]:

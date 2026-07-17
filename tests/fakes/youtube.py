@@ -6,6 +6,10 @@ from refindery.adapters.youtube.backend import (
     VideoCaptionsResult,
     YoutubeEntry,
 )
+from refindery.application.ports.transcriber import (
+    TranscriptionResult,
+    TranscriptionSegment,
+)
 from refindery.domain.errors import FetchFailedError
 
 
@@ -70,8 +74,13 @@ class FakeYoutubeBackend:
 class FakeTranscriber:
     """Returns fixed text; records the audio paths it was given."""
 
-    def __init__(self, text: str = "fake transcript from audio") -> None:
-        self.text = text
+    def __init__(
+        self,
+        text: str = "fake transcript from audio",
+        *,
+        segments: tuple[TranscriptionSegment, ...] = (),
+    ) -> None:
+        self.result = TranscriptionResult(text=text, segments=segments)
         self.calls: list[Path] = []
 
     async def transcribe(
@@ -79,7 +88,7 @@ class FakeTranscriber:
         audio_path: Path,
         *,
         language: str | None = None,  # noqa: ARG002 — port signature
-    ) -> str:
-        """Return the fixed transcript."""
+    ) -> TranscriptionResult:
+        """Return the fixed transcription result."""
         self.calls.append(audio_path)
-        return self.text
+        return self.result

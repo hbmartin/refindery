@@ -3,6 +3,8 @@
 import json
 
 from refindery.adapters.youtube.captions import (
+    parse_json3,
+    parse_vtt,
     transcript_from_json3,
     transcript_from_vtt,
 )
@@ -32,6 +34,23 @@ def test_json3_segless_events_are_skipped():
     assert transcript_from_json3(_json3(None, None)) == ""
 
 
+def test_json3_preserves_offsets_for_retained_lines():
+    raw = json.dumps(
+        {
+            "events": [
+                {"tStartMs": 0, "segs": [{"utf8": "first"}]},
+                {"tStartMs": 10_000, "segs": [{"utf8": "first"}]},
+                {"tStartMs": 20_000, "segs": [{"utf8": "second"}]},
+            ]
+        }
+    )
+
+    parsed = parse_json3(raw)
+
+    assert parsed.text == "first\nsecond"
+    assert parsed.offsets == ((0, 0.0), (6, 20.0))
+
+
 VTT = """WEBVTT
 Kind: captions
 Language: en
@@ -50,3 +69,10 @@ General &amp; specific
 
 def test_vtt_strips_headers_timings_tags_and_rolling_duplicates():
     assert transcript_from_vtt(VTT) == "Hello there\nGeneral & specific"
+
+
+def test_vtt_preserves_offsets_for_retained_cues():
+    parsed = parse_vtt(VTT)
+
+    assert parsed.text == "Hello there\nGeneral & specific"
+    assert parsed.offsets == ((0, 0.0), (12, 4.0))

@@ -18,6 +18,7 @@ from refindery.adapters.queue.huey_queue import (
     DeadJobCallback,
     HueyJobQueue,
     JobHandler,
+    RetriedJobCallback,
 )
 from refindery.application.ports.clock import Clock
 from refindery.config import JobsSettings
@@ -52,6 +53,7 @@ def _queue(
     handlers: Mapping[JobKind, JobHandler],
     *,
     on_dead: DeadJobCallback | None = None,
+    on_retry: RetriedJobCallback | None = None,
     max_attempts: int = 5,
     clock: Clock | None = None,
     handler_timeout_s: float | None = None,
@@ -67,6 +69,7 @@ def _queue(
         ),
         handlers=handlers,
         on_dead=on_dead,
+        on_retry=on_retry,
     )
 
 
@@ -115,6 +118,7 @@ async def test_enqueue_is_idempotent(tmp_path, store):
 async def test_retries_then_dead_letters_and_manual_retry(tmp_path, store):
     calls: list[int] = []
     dead: list[str] = []
+    retried: list[Job] = []
 
     async def flaky(job: Job) -> None:
         calls.append(1)
@@ -124,11 +128,15 @@ async def test_retries_then_dead_letters_and_manual_retry(tmp_path, store):
     async def on_dead(job: Job, error: str) -> None:
         dead.append(error)
 
+    async def on_retry(job: Job) -> None:
+        retried.append(job)
+
     queue = _queue(
         tmp_path,
         store,
         {JobKind.INDEX_PAGE: flaky},
         on_dead=on_dead,
+        on_retry=on_retry,
         max_attempts=3,
     )
     await queue.start()
@@ -148,8 +156,50 @@ async def test_retries_then_dead_letters_and_manual_retry(tmp_path, store):
         await queue.retry(job_id)
         await _wait_for_status(store, job_id, JobStatus.DEAD)
         assert len(calls) == 3
+        assert len(retried) == 1
+        assert retried[0].status is JobStatus.PENDING
+        assert retried[0].attempts == 0
     finally:
         await queue.stop()
+
+
+async def test_manual_retry_fires_on_retry_before_reenqueue(tmp_path, store):
+    """Deterministic ordering check: no consumer runs, so nothing races.
+
+    The hook must observe the ledger already reset (PENDING) but the huey
+    re-enqueue not yet performed (pending_count still 1).
+    """
+
+    async def never_runs(job: Job) -> None:
+        msg = "consumer is not started in this test"
+        raise AssertionError(msg)
+
+    observed: list[tuple[JobStatus, int]] = []
+    queue: HueyJobQueue | None = None
+
+    async def on_retry(job: Job) -> None:
+        assert queue is not None
+        observed.append((job.status, queue.huey.pending_count()))
+
+    queue = _queue(
+        tmp_path,
+        store,
+        {JobKind.INDEX_PAGE: never_runs},
+        on_retry=on_retry,
+    )
+    job_id = await queue.enqueue(
+        kind=JobKind.INDEX_PAGE,
+        payload={"page_id": "p1"},
+        idempotency_key="index:p1:h1",
+    )
+    assert job_id is not None
+    assert queue.huey.pending_count() == 1
+    await store.mark_job_dead(job_id=job_id, last_error="boom", now=FakeClock().now())
+
+    await queue.retry(job_id)
+
+    assert observed == [(JobStatus.PENDING, 1)]
+    assert queue.huey.pending_count() == 2
 
 
 async def test_lease_timeout_cancels_stuck_job_and_frees_worker(tmp_path, store):

@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 type JobHandler = Callable[[Job], Awaitable[None]]
 type DeadJobCallback = Callable[[Job, str], Awaitable[None]]
+type RetriedJobCallback = Callable[[Job], Awaitable[None]]
 
 
 class EmbeddedConsumer(Consumer):
@@ -69,6 +70,7 @@ class HueyJobQueue:
         settings: JobsSettings,
         handlers: Mapping[JobKind, JobHandler],
         on_dead: DeadJobCallback | None = None,
+        on_retry: RetriedJobCallback | None = None,
         events: JobEventBus | None = None,
     ) -> None:
         self._store = store
@@ -76,6 +78,7 @@ class HueyJobQueue:
         self._settings = settings
         self._handlers = dict(handlers)
         self._on_dead = on_dead
+        self._on_retry = on_retry
         self._events = events
         self._loop: asyncio.AbstractEventLoop | None = None
         self._consumer: EmbeddedConsumer | None = None
@@ -118,10 +121,18 @@ class HueyJobQueue:
         return job.id
 
     async def retry(self, job_id: JobId) -> JobId:
-        """Re-enqueue a dead job (resets attempts)."""
+        """Re-enqueue a dead job (resets attempts).
+
+        ``on_retry`` fires after the ledger reset and before the huey
+        re-enqueue, so derived state (page status) is restored before the
+        handler can possibly run — the handler never observes, and can never
+        be overwritten by, a stale reset.
+        """
         job = await self._store.reset_job_for_retry(
             job_id=job_id, now=self._clock.now()
         )
+        if self._on_retry is not None:
+            await self._on_retry(job)
         self._publish(job)
         await asyncio.to_thread(self._task, str(job.id))
         return job.id

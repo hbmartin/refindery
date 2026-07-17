@@ -1,6 +1,6 @@
 [project]
 name = "refindery"
-version = "0.2.0"
+version = "0.3.0"
 description = "A local, single-machine retrieval engine over the web pages you read."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -82,6 +82,10 @@ ner = [
 youtube = [
     "yt-dlp>=2025.1.26",
 ]
+podcast = [
+    "podcast-chapter-tools>=0.2",
+    "podcast-transcript-convert>=0.2",
+]
 transcribe = [
     "faster-whisper>=1.1",
 ]
@@ -123,6 +127,7 @@ DEP002 = [
     # Optional extras, imported lazily (deptry cannot see conditional imports):
     "torch", "gliner", "gliner-spacy", "onnxruntime", "en-core-web-sm",
     "igraph", "leidenalg", "kuzu", "yt-dlp", "faster-whisper", "mlx-whisper",
+    "podcast-chapter-tools", "podcast-transcript-convert",
     # Lazy imports inside functions/adapters:
     "scikit-learn", "umap-learn", "spacy", "model2vec",
     "opentelemetry-exporter-otlp-proto-http",

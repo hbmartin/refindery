@@ -58,9 +58,17 @@ the complete request and response shapes.
 ## Filters
 
 Filters are first-class and pushed into the vector store where supported:
-`domain`, `after`, `before`, `cluster_id`, `entity_id`. There is deliberately
+`domain`, `after`, `before`, `cluster_id`, `entity`. There is deliberately
 **no embedding-model filter** — model selection is global (the active model) or
 per-arm via [`/compare`](models.md).
+
+The `entity` filter accepts an entity id, a canonical form, or an alias. A
+reference that resolves to no known entity returns **404** — a bad reference
+is distinguishable from "entity exists but matches nothing" (an empty result).
+A filter matching more pages than the push-down cap returns **422**; narrow
+the reference. Unknown or tombstoned `cluster_id` values still yield empty
+results rather than an error, because cluster ids legitimately churn across
+refits.
 
 ## Recency decay
 

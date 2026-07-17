@@ -5,10 +5,12 @@ a native Lance FTS index (the shared sparse arm — tantivy was removed in
 lancedb 0.34); one safe ``vectors_<slug>_<hash>`` table per model holds that
 model's dense vectors plus a payload copy for filter pushdown.
 
-The chunks table is ``optimize()``d after every write: lancedb 0.34's FTS
-scan over *unindexed* rows silently returns no results when a matching
-document contains a repeated term, so search must never rely on it —
-optimize folds fresh rows into the index immediately.
+The chunks table is ``optimize()``d after every upsert: lancedb 0.34's FTS
+flat scan over *unindexed* rows silently misses some matching documents
+(observed with a repeated-term doc; the exact trigger is fragment-dependent
+— characterized in ``tests/integration/test_lancedb_fts.py``), so search
+must never rely on it. Deletes need no optimize: deleted rows are masked at
+query time.
 Table-per-model keeps add/drop-model trivial (create/drop table) at the cost
 of duplicated payload — irrelevant at personal scale.
 
@@ -16,6 +18,7 @@ LanceDB's Python API is synchronous; every method hops to a thread.
 """
 
 import asyncio
+import logging
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -39,7 +42,15 @@ from refindery.domain.models import EmbeddingModel
 from refindery.domain.retrieval import ChunkHit
 from refindery.domain.rollup import Vector
 
+logger = logging.getLogger(__name__)
+
 _CHUNKS_TABLE = "chunks"
+_FTS_INDEX_NAME = "text_idx"
+# Positions + retained stop words make quoted-phrase queries work on the
+# sparse arm; the default positionless config RAISES on them and stop-word
+# queries match nothing (see tests/integration/test_lancedb_fts.py). The
+# larger index is irrelevant at personal scale.
+_FTS_CONFIG = FTS(with_position=True, remove_stop_words=False)
 
 if TYPE_CHECKING:
     from lancedb.query import LanceVectorQueryBuilder
@@ -98,6 +109,25 @@ def _vectors_schema(dim: int) -> pa.Schema:
     )
 
 
+def _fts_index_current(chunks: lancedb.table.Table) -> bool:
+    """Whether the text FTS index exists with the config this adapter wants.
+
+    ``index_details`` exposes the live index config, so the index itself is
+    the migration fingerprint — only the two knobs this adapter sets are
+    compared (other keys use Rust-side names that differ from the ``FTS``
+    dataclass).
+    """
+    for index in chunks.list_indices():
+        if index.name != _FTS_INDEX_NAME:
+            continue
+        details = index.index_details or {}
+        return (
+            details.get("with_position") is True
+            and details.get("remove_stop_words") is False
+        )
+    return False
+
+
 def _payload_row(point: ChunkPoint) -> dict[str, object]:
     return {
         "chunk_id": point.chunk_id,
@@ -129,8 +159,14 @@ class LanceDbVectorStore:
             chunks = self._db.create_table(
                 _CHUNKS_TABLE, schema=_chunks_schema(), exist_ok=True
             )
-            if not any(i.name == "text_idx" for i in chunks.list_indices()):
-                chunks.create_index("text", config=FTS(), replace=True)
+            if not _fts_index_current(chunks):
+                # First boot, or a one-time synchronous rebuild when upgrading
+                # an install created with the positionless config.
+                logger.info(
+                    "building the phrase-capable FTS index "
+                    "(positions on, stop words retained)"
+                )
+                chunks.create_index("text", config=_FTS_CONFIG, replace=True)
             for model in models:
                 self._db.create_table(
                     _vectors_table(model.id),
@@ -169,6 +205,9 @@ class LanceDbVectorStore:
             chunks = self._db.open_table(_CHUNKS_TABLE)
             rows = [{**_payload_row(p), "text": p.text} for p in points]
             self._merge(chunks, rows)
+            # Fold fresh rows into the FTS index before returning: the
+            # unindexed flat scan silently misses some matching docs (see
+            # tests/integration/test_lancedb_fts.py).
             chunks.optimize()
             model_ids = {m for p in points for m in p.vectors}
             for model_id in sorted(model_ids):
@@ -214,7 +253,7 @@ class LanceDbVectorStore:
             raise last_error
 
     async def delete_pages(self, page_ids: Sequence[PageId]) -> None:
-        """Delete chunks of these pages from every table; rebuild FTS."""
+        """Delete chunks of these pages from every table."""
         if not page_ids:
             return
 
@@ -223,7 +262,9 @@ class LanceDbVectorStore:
             predicate = f"page_id IN ({quoted})"
             chunks = self._db.open_table(_CHUNKS_TABLE)
             chunks.delete(predicate)
-            chunks.optimize()
+            # No optimize: deleted rows are masked at query time (see
+            # tests/integration/test_lancedb_fts.py); compaction rides the
+            # next upsert's optimize().
             for name in self._table_names():
                 if name.startswith("vectors_"):
                     self._db.open_table(name).delete(predicate)
@@ -278,7 +319,7 @@ class LanceDbVectorStore:
         limit: int,
         filters: StoreFilter | None = None,
     ) -> list[ChunkHit]:
-        """Tantivy FTS over the shared chunks table."""
+        """Lance-native FTS (BM25) over the shared chunks table."""
 
         def _query() -> list[ChunkHit]:
             table = self._db.open_table(_CHUNKS_TABLE)

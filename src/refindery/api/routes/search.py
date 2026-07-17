@@ -25,12 +25,14 @@ from refindery.api.schemas import (
 from refindery.api.schemas import ClusterRef as ApiClusterRef
 from refindery.application.container import Container
 from refindery.application.services.search_service import (
+    EntityFilterTooBroadError,
     SearchFilters,
     SearchQuery,
     SearchResultPage,
 )
 from refindery.application.services.similarity_service import Mediation
 from refindery.domain.errors import (
+    EntityNotFoundError,
     FeatureUnavailableError,
     NoActiveModelError,
     PageNotFoundError,
@@ -124,7 +126,9 @@ async def _execute_search(container: Container, query: SearchQuery) -> SearchRes
         "Hybrid semantic + keyword search over pages the user has read. "
         "Returns grounded passages from the user's own reading history. "
         "Contains no information the user has not read. Returns an empty "
-        "result when nothing matches."
+        "result when nothing matches. An entity filter that resolves to no "
+        "known entity returns 404 so a bad reference is distinguishable "
+        "from a genuine zero."
     ),
 )
 async def search(
@@ -143,6 +147,14 @@ async def search(
     except NoActiveModelError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except EntityFilterTooBroadError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
 
 

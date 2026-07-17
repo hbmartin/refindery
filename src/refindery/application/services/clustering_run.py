@@ -33,6 +33,7 @@ from refindery.domain.clustering import (
 from refindery.domain.ctfidf import compute_ctfidf
 from refindery.domain.errors import NoActiveModelError, RefinderyError
 from refindery.domain.ids import ClusterId, PageId, new_cluster_run_id
+from refindery.domain.job_keys import canonicalize_entities_key, cluster_key
 from refindery.domain.models import (
     Cluster,
     ClusterProjectionCentroid,
@@ -105,7 +106,7 @@ class ClusterRunService:
         await self._queue.enqueue(
             kind=JobKind.CLUSTER,
             payload={"trigger": trigger},
-            idempotency_key=f"cluster:{self._clock.now().isoformat()}",
+            idempotency_key=cluster_key(self._clock.now()),
         )
         return True
 
@@ -375,7 +376,7 @@ class ClusterRunService:
         await self._queue.enqueue(
             kind=JobKind.CANONICALIZE_ENTITIES,
             payload={"run_id": run.id},
-            idempotency_key=f"canon:{run.id}",
+            idempotency_key=canonicalize_entities_key(run.id),
         )
         logger.info(
             "cluster run %s: %d pages -> %d clusters (%d noise) in %dms",

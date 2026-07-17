@@ -26,6 +26,8 @@ from refindery.adapters.observability.duckdb_sink import DuckDbSink
 from refindery.adapters.observability.metrics import jobs_lease_expired, queue_depth
 from refindery.adapters.observability.metrics_history import MetricsSnapshotter
 from refindery.adapters.observability.query_log import DuckDbQueryLog
+from refindery.adapters.podcast.extractor import PodcastTranscriptExtractor
+from refindery.adapters.podcast.producer import PodcastTranscriptProducer
 from refindery.adapters.queue.huey_queue import HueyJobQueue
 from refindery.adapters.resilience.circuit_breaker import BreakerConfig, BreakerRegistry
 from refindery.adapters.resilience.retry import RetryPolicy
@@ -46,6 +48,7 @@ from refindery.application.ports.entity_extractor import EntityExtractor
 from refindery.application.ports.graph_store import GraphStore
 from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
+from refindery.application.ports.podcast_producer import PodcastProducer
 from refindery.application.ports.query_log import QueryLogSink
 from refindery.application.ports.reranker import Reranker
 from refindery.application.ports.transcriber import Transcriber
@@ -67,7 +70,7 @@ from refindery.application.services.model_registry import ModelRegistry
 from refindery.application.services.search_service import SearchService
 from refindery.application.services.similarity_service import SimilarityService
 from refindery.application.services.watch_service import WatchService
-from refindery.config import RerankerKind, Settings, VectorStoreKind
+from refindery.config import PdfSettings, RerankerKind, Settings, VectorStoreKind
 from refindery.domain.canonical_url import CanonicalizationRules
 from refindery.domain.errors import ConfigurationError, ExtractionUnavailableError
 from refindery.domain.models import (
@@ -504,11 +507,17 @@ def _build_reranker(settings: Settings) -> Reranker | None:
             raise ConfigurationError(msg)
 
 
-def _build_extractors() -> list[ContentExtractor]:
+def _build_extractors(pdf: PdfSettings) -> list[ContentExtractor]:
     extractors: list[ContentExtractor] = [
-        PypdfExtractor(),
+        PypdfExtractor(
+            strip_repeated_lines=pdf.strip_repeated_lines,
+            repeated_line_ratio=pdf.repeated_line_ratio,
+            repeated_line_scan=pdf.repeated_line_scan,
+            min_pages_for_stripping=pdf.min_pages_for_stripping,
+        ),
         YoutubeTranscriptExtractor(),
         AudioTranscriptExtractor(),
+        PodcastTranscriptExtractor(),
     ]
     try:
         from refindery.adapters.extraction.pulpie_html import (  # noqa: PLC0415 — lazy: requires the html extra
@@ -547,6 +556,20 @@ def _build_audio(
         max_bytes=settings.fetch.audio_max_bytes,
     )
     return AudioTranscriptFetcher(downloader=downloader, transcriber=transcriber)
+
+
+def _build_podcast(settings: Settings, *, fetcher: Fetcher) -> PodcastProducer | None:
+    """Build published-transcript support while retaining audio fallback."""
+    if not settings.fetch.podcast_transcripts:
+        return None
+    try:
+        return PodcastTranscriptProducer(fetcher=fetcher)
+    except ExtractionUnavailableError:
+        logger.info(
+            "podcast extra not installed; podcast watches use audio transcription "
+            "when available (install the 'podcast' extra for published transcripts)"
+        )
+        return None
 
 
 def _build_youtube(
@@ -605,7 +628,8 @@ def build_container(settings: Settings) -> Container:
             default=http_fetcher, youtube=youtube_fetcher, audio=audio_fetcher
         )
     )
-    router = ExtractionRouter(_build_extractors())
+    podcast_producer = _build_podcast(settings, fetcher=http_fetcher)
+    router = ExtractionRouter(_build_extractors(settings.pdf))
     registry = ModelRegistry(
         store=store,
         vector_store=vector_store,
@@ -622,6 +646,7 @@ def build_container(settings: Settings) -> Container:
         fetcher=fetcher,
         router=router,
         pooling=settings.indexing.page_vector_pooling,
+        podcast_producer=podcast_producer,
     )
     events = JobEventBus(
         queue_size=settings.events.queue_size,
@@ -637,6 +662,7 @@ def build_container(settings: Settings) -> Container:
             JobKind.FETCH_AND_INDEX: indexing.handle_fetch_and_index,
         },
         on_dead=indexing.mark_page_dead,
+        on_retry=indexing.mark_page_queued,
         events=events,
     )
     indexing.set_queue(queue)
@@ -751,7 +777,7 @@ def build_container(settings: Settings) -> Container:
             max_entries=settings.watch.youtube_max_entries,
             timeout_s=settings.fetch.youtube_timeout_s,
         )
-    if audio_fetcher is not None:
+    if audio_fetcher is not None or podcast_producer is not None:
         sources[WatchKind.PODCAST] = PodcastWatchSource(fetcher=fetcher)
     watches = WatchService(
         store=store,

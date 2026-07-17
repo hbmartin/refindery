@@ -6,7 +6,7 @@ from refindery.adapters.youtube.envelope import (
     YOUTUBE_TRANSCRIPT_CONTENT_TYPE,
     YoutubeTranscriptEnvelope,
 )
-from refindery.domain.models import ExtractedContent
+from refindery.domain.models import ExtractedContent, Section
 
 
 class YoutubeTranscriptExtractor:
@@ -29,4 +29,17 @@ class YoutubeTranscriptExtractor:
         except ValidationError as exc:
             msg = f"malformed youtube transcript envelope: {exc}"
             raise ValueError(msg) from exc
-        return ExtractedContent(body_text=envelope.transcript, title=envelope.title)
+        sections = tuple(
+            Section(
+                title=section.title,
+                char_start=section.char_start,
+                char_end=section.char_end,
+                start_time_s=section.start_time_s,
+            )
+            for section in envelope.sections
+        )
+        return ExtractedContent(
+            body_text=envelope.transcript,
+            title=envelope.title,
+            sections=sections or None,
+        )

@@ -75,6 +75,11 @@ re-canonicalization within blocks, merging entities and refreshing counts and
 IDF. Merges change an entity's ID, so callers holding an `entity_id` should
 prefer canonical-form lookups or re-resolve.
 
+Resolution (id → canonical form → alias) is deterministic on collisions: ids
+are time-ordered, and the oldest entity wins when a canonical form or alias is
+shared. A reference that resolves to nothing returns 404 from
+`GET /v1/entities/{ref}` and from the `entity` search filter alike.
+
 ## Related
 
 - [Searching](search.md) — the `entity` filter and `entity` similarity mediation.

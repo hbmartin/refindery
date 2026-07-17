@@ -22,6 +22,12 @@ ingest_pages_total = Counter(
     ["outcome"],  # queued | revisit | blacklisted
     registry=registry,
 )
+pdf_pages_total = Counter(
+    "refindery_pdf_pages_total",
+    "PDF pages seen during extraction",
+    ["outcome"],  # text | empty (no text layer, e.g. scanned/image-only)
+    registry=registry,
+)
 job_failures_total = Counter(
     "refindery_job_failures_total",
     "Job attempts that failed",

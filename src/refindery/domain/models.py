@@ -63,6 +63,7 @@ class JobKind(StrEnum):
     PURGE_VECTORS = "purge_vectors"
     EVAL_REPLAY = "eval_replay"
     POLL_WATCH = "poll_watch"
+    GRAPH_PROJECT = "graph_project"
 
 
 class BlacklistKind(StrEnum):

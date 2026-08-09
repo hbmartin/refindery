@@ -4,11 +4,12 @@ import logging
 from inspect import isawaitable
 
 from refindery.application.ports.entity_extractor import EntityExtractor
+from refindery.application.ports.job_queue import JobQueue
 from refindery.application.ports.metadata_store import MetadataStore
 from refindery.application.services.canonicalization import CanonicalizationService
 from refindery.domain.errors import PageNotFoundError
 from refindery.domain.ids import PageId
-from refindery.domain.models import Job, PageStatus
+from refindery.domain.models import Job, JobKind, Page, PageStatus
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,14 @@ class EntityIngestService:
         store: MetadataStore,
         extractor: EntityExtractor,
         canonicalization: CanonicalizationService,
+        queue: JobQueue,
+        graph_enabled: bool = False,
     ) -> None:
         self._store = store
         self._extractor = extractor
         self._canonicalization = canonicalization
+        self._queue = queue
+        self._graph_enabled = graph_enabled
 
     async def handle_extract_entities_job(self, job: Job) -> None:
         """Extract and link entities for an already-indexed page."""
@@ -60,6 +65,19 @@ class EntityIngestService:
                 page_id=page.id, mentions=mentions
             )
         logger.debug("page %s: %d mentions", page.id, len(mentions))
+        if self._graph_enabled:
+            await self._enqueue_graph_projection(page)
+
+    async def _enqueue_graph_projection(self, page: Page) -> None:
+        """Enqueue a per-page graph projection; never fails the entity job."""
+        try:
+            await self._queue.enqueue(
+                kind=JobKind.GRAPH_PROJECT,
+                payload={"mode": "page", "page_id": page.id},
+                idempotency_key=f"graph:{page.id}:{page.content_hash}",
+            )
+        except Exception:
+            logger.exception("failed to enqueue graph projection for %s", page.id)
 
     async def close(self) -> None:
         """Release extractor resources when present."""

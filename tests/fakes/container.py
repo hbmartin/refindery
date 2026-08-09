@@ -25,6 +25,7 @@ from refindery.application.ports.cluster_engine import (
     ClusterParams,
 )
 from refindery.application.ports.content_extractor import Fetcher
+from refindery.application.ports.graph_store import GraphStore
 from refindery.application.ports.podcast_producer import PodcastProducer
 from refindery.application.ports.watch_source import WatchSource
 from refindery.application.services.admin_eval import AdminEvalService
@@ -37,6 +38,7 @@ from refindery.application.services.entity_ingest import EntityIngestService
 from refindery.application.services.extraction_router import ExtractionRouter
 from refindery.application.services.feedback_service import FeedbackService
 from refindery.application.services.forget_service import ForgetService
+from refindery.application.services.graph_projection import GraphProjectionService
 from refindery.application.services.indexing import IndexingService
 from refindery.application.services.ingest import IngestService
 from refindery.application.services.model_registry import ModelRegistry
@@ -129,6 +131,7 @@ def build_test_container(
     cluster_engine=None,
     clock: Clock | None = None,
     watch_sources: Mapping[WatchKind, WatchSource] | None = None,
+    graph_store: GraphStore | None = None,
     chunker: Chunker | None = None,
     podcast_producer: PodcastProducer | None = None,
 ) -> Container:
@@ -192,7 +195,7 @@ def build_test_container(
         sink, interval_s=settings.observability.metrics_snapshot_interval_s
     )
     reranker = FakeReranker()
-    similarity = SimilarityService(store=store)
+    similarity = SimilarityService(store=store, graph_store=graph_store)
     search = SearchService(
         store=store,
         vector_store=vector_store,
@@ -215,10 +218,15 @@ def build_test_container(
         store=store,
         extractor=extractor or FakeEntityExtractor({}),
         canonicalization=canonicalization,
+        queue=queue,
+        graph_enabled=graph_store is not None,
     )
     queue.add_handler(
         JobKind.EXTRACT_ENTITIES, entity_ingest.handle_extract_entities_job
     )
+    if graph_store is not None:
+        graph_projection = GraphProjectionService(store=store, graph_store=graph_store)
+        queue.add_handler(JobKind.GRAPH_PROJECT, graph_projection.handle_job)
     clustering = ClusterRunService(
         store=store,
         engine=cluster_engine or _InlineClusterEngine(),
@@ -226,6 +234,7 @@ def build_test_container(
         clock=clock,
         canonicalization=canonicalization,
         settings=settings.cluster,
+        graph_enabled=graph_store is not None,
     )
     idle_detector = IdleDetector(store=store, clock=clock, settings=settings.cluster)
     queue.add_handler(JobKind.CLUSTER, clustering.handle_cluster_job)
@@ -296,4 +305,5 @@ def build_test_container(
         watches=watches,
         events=events,
         reranker=reranker,
+        graph_store=graph_store,
     )

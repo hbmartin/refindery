@@ -404,6 +404,16 @@ class _EntityClusterMixin:
         rows = await cursor.fetchall()
         return [_entity_from_row(row) for row in rows]
 
+    async def mention_counts_for_page(self, page_id: PageId) -> dict[EntityId, int]:
+        """Per-entity mention counts on a page."""
+        cursor = await self.conn.execute(
+            "SELECT entity_id, COUNT(*) AS n FROM entity_mentions "
+            "WHERE page_id = ? GROUP BY entity_id",
+            (page_id,),
+        )
+        rows = await cursor.fetchall()
+        return {EntityId(row["entity_id"]): int(row["n"]) for row in rows}
+
     async def entity_blocks_with_duplicates(
         self,
     ) -> list[tuple[EntityType, str, list[EntityId]]]:

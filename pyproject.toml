@@ -73,6 +73,9 @@ leiden = [
     "igraph>=1.0.0",
     "leidenalg>=0.12.0",
 ]
+kuzu = [
+    "kuzu>=0.11",
+]
 ner = [
     "en-core-web-sm",
 ]
@@ -123,7 +126,7 @@ en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/dow
 DEP002 = [
     # Optional extras, imported lazily (deptry cannot see conditional imports):
     "torch", "gliner", "gliner-spacy", "onnxruntime", "en-core-web-sm",
-    "igraph", "leidenalg", "yt-dlp", "faster-whisper", "mlx-whisper",
+    "igraph", "leidenalg", "kuzu", "yt-dlp", "faster-whisper", "mlx-whisper",
     "podcast-chapter-tools", "podcast-transcript-convert",
     # Lazy imports inside functions/adapters:
     "scikit-learn", "umap-learn", "spacy", "model2vec",

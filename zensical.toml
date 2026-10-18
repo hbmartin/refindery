@@ -69,6 +69,7 @@ nav = [
   { "Contributing" = [
     { "Overview" = "contributing/index.md" },
     { "Testing" = "contributing/testing.md" },
+    { "Roadmap" = "contributing/roadmap.md" },
   ] },
 ]
 

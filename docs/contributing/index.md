@@ -73,4 +73,6 @@ generated from source docstrings via mkdocstrings.
 3. Ensure all checks above pass.
 4. Open a pull request with a clear description.
 
-See [Testing](testing.md) for how the suite is wired.
+See [Testing](testing.md) for how the suite is wired, and the
+[Roadmap](roadmap.md) for the design and sequencing of planned engine features
+and the agent layer.
